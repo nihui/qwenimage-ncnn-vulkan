@@ -77,14 +77,6 @@ void get_optimal_vae_tile_size(int width, int height, const RuntimeConfig& confi
         (uint64_t)heap_budget * 1024u * 1024u / 6000u;
     if (max_tile_area < 16u * 16u)
         max_tile_area = 16u * 16u;
-    if (config.use_weights_in_host_memory)
-    {
-        // Host-backed weights are the low-VRAM policy used for the large
-        // transformer as well.  Keep the VAE working set bounded by a
-        // conservative 512x512 tile in the same mode.
-        max_tile_area = std::min<uint64_t>(max_tile_area, 512u * 512u);
-    }
-
     if ((uint64_t)width * height <= max_tile_area)
         return;
 
