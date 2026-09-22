@@ -1,0 +1,341 @@
+// qwen-image implemented with ncnn library
+
+#include "pipeline.h"
+
+#include <algorithm>
+#include <cstdlib>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <fstream>
+#include <random>
+#include <cstdio>
+
+#include "image_io.h"
+#include "scheduler.h"
+#include "text_encoder.h"
+#include "tokenizer.h"
+#include "transformer.h"
+#include "vae.h"
+
+namespace qwenimage {
+namespace {
+using Clock = std::chrono::steady_clock;
+constexpr int kLatentDim = 64;
+constexpr int kTextDim = 4096;
+
+double ms_since(const Clock::time_point& begin)
+{
+    return std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
+}
+bool read_f32(const std::string& path, size_t count, std::vector<float>& data)
+{
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) return false;
+    data.resize(count);
+    stream.read(reinterpret_cast<char*>(data.data()), (std::streamsize)(count * sizeof(float)));
+    return stream.good() || stream.gcount() == (std::streamsize)(count * sizeof(float));
+}
+bool write_f32(const std::string& path, const std::vector<float>& data)
+{
+    std::ofstream stream(path, std::ios::binary);
+    if (!stream) return false;
+    stream.write(reinterpret_cast<const char*>(data.data()), (std::streamsize)(data.size() * sizeof(float)));
+    return static_cast<bool>(stream);
+}
+bool make_tokenizer(const std::string& root, QwenBpeTokenizer& tokenizer)
+{
+    SpecialTokensConfig spec;
+    spec.eos_token = "<|im_end|>";
+    spec.pad_token = "<|endoftext|>";
+    tokenizer = QwenBpeTokenizer::LoadFromFiles(root + "/processor/vocab.txt", root + "/processor/merges.txt", spec, false, false, true);
+    if (tokenizer.vocab_size() == 0) return false;
+    const char* specials[] = {
+        "<|endoftext|>", "<|im_start|>", "<|im_end|>",
+        "<|vision_start|>", "<|vision_end|>", "<|image_pad|>",
+        "<|video_pad|>", "<|vision_pad|>",
+    };
+    for (const char* token : specials)
+        tokenizer.AddAdditionalSpecialToken(token, true);
+    return true;
+}
+}
+bool QwenImagePipeline::load(const std::string& model_dir, RuntimeConfig config, std::string* error)
+{
+    models_.unload_all();
+    loaded_ = false;
+    config_ = normalize_runtime_config(config);
+    model_dir_ = model_dir;
+    paths_ = make_model_paths(model_dir);
+    if (!validate_model_paths(paths_, error))
+        return false;
+
+    // Qwen-Image-2.1 has one dynamic ncnn package.  The runtime graph
+    // contract is intentionally kept in code so the model folder contains
+    // only the weights and the tokenizer data it actually consumes.
+    constexpr int kModelWidth = 1024;
+    constexpr int kModelHeight = 1024;
+    constexpr int kTextCapacity = 512;
+    constexpr int kDropSystemTokens = 14;
+    width_ = kModelWidth;
+    height_ = kModelHeight;
+    static_shape_ = false;
+    latent_width_ = width_ / 16;
+    latent_height_ = height_ / 16;
+    text_tokens_ = kTextCapacity - kDropSystemTokens;
+    text_config_.max_input_tokens = kTextCapacity;
+    text_config_.dynamic_sequence = true;
+    text_config_.multimodal_graph = true;
+    drop_system_tokens_ = kDropSystemTokens;
+    text_config_.drop_system_tokens = drop_system_tokens_;
+    pad_token_id_ = 151643;
+
+    configure_auto_low_vram(config_, width_, height_);
+    loaded_ = true;
+    return true;
+}
+bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings* timings)
+{
+    if (!loaded_ || request.prompt.empty() || request.steps <= 0)
+        return false;
+    const int width = request.width > 0 ? request.width : width_;
+    const int height = request.height > 0 ? request.height : height_;
+    if (width <= 0 || height <= 0 || width % 16 || height % 16)
+    {
+        fprintf(stderr, "requested size must be positive multiples of 16: %dx%d\n", width, height);
+        return false;
+    }
+    if (static_shape_ && (width != width_ || height != height_))
+    {
+        fprintf(stderr, "this static export is for %dx%d, requested %dx%d\n", width_, height_, width, height);
+        return false;
+    }
+    const int latent_width = width / 16;
+    const int latent_height = height / 16;
+    configure_auto_low_vram(config_, width, height);
+    models_.unload_all();
+
+    QwenBpeTokenizer tokenizer = QwenBpeTokenizer::LoadFromFiles(model_dir_ + "/processor/vocab.txt", model_dir_ + "/processor/merges.txt", SpecialTokensConfig(), false, false, true);
+    if (tokenizer.vocab_size() == 0) return false;
+    const char* specials[] = {
+        "<|endoftext|>", "<|im_start|>", "<|im_end|>",
+        "<|vision_start|>", "<|vision_end|>", "<|image_pad|>",
+        "<|video_pad|>", "<|vision_pad|>",
+    };
+    for (const char* token : specials)
+        tokenizer.AddAdditionalSpecialToken(token, true);
+
+    auto format_prompt = [](const std::string& value) {
+        return std::string("<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n<|im_start|>user\n") + value + "<|im_end|>\n<|im_start|>assistant\n";
+    };
+
+    auto encode_prompt = [&](const std::string& value, std::vector<float>& embeds, int& valid_tokens) -> bool
+    {
+        const std::string text = format_prompt(value);
+        const std::vector<int> actual_ids = tokenizer.encode(text);
+        if (actual_ids.empty())
+        {
+            fprintf(stderr, "prompt tokenization failed\n");
+            return false;
+        }
+        if (!text_config_.dynamic_sequence && actual_ids.size() > (size_t)text_config_.max_input_tokens)
+        {
+            fprintf(stderr, "prompt is longer than the exported text capacity\n");
+            return false;
+        }
+
+        std::vector<int> encoder_ids;
+        if (text_config_.dynamic_sequence)
+        {
+            encoder_ids = actual_ids;
+        }
+        else
+        {
+            encoder_ids.assign(text_config_.max_input_tokens, pad_token_id_);
+            std::copy(actual_ids.begin(), actual_ids.end(), encoder_ids.begin());
+        }
+
+        QwenTextEncoder text_encoder(models_, config_);
+        return text_encoder.encode(encoder_ids, (int)actual_ids.size(), text_config_, embeds, valid_tokens);
+    };
+
+    const bool has_negative_prompt = request.has_negative_prompt || !request.negative_prompt.empty();
+    const bool do_true_cfg = request.guidance_scale > 1.f && has_negative_prompt;
+    if (request.guidance_scale > 1.f && !has_negative_prompt)
+        fprintf(stderr, "true_cfg_scale requires a negative prompt; CFG disabled\n");
+    if (has_negative_prompt && !do_true_cfg)
+        fprintf(stderr, "negative prompt ignored because true_cfg_scale <= 1\n");
+    if (do_true_cfg)
+        fprintf(stderr, "true_cfg_scale = %g\n", request.guidance_scale);
+
+    if (!models_.load_text_encoder(paths_, config_))
+    {
+        fprintf(stderr, "pipeline text encoder graph load failed\n");
+        return false;
+    }
+    std::vector<float> text_embeds;
+    std::vector<float> negative_text_embeds;
+    int valid_output_tokens = 0;
+    int negative_valid_output_tokens = 0;
+    const Clock::time_point text_begin = Clock::now();
+    bool text_ok = encode_prompt(request.prompt.empty() ? " " : request.prompt, text_embeds, valid_output_tokens);
+    if (text_ok && do_true_cfg)
+        text_ok = encode_prompt(request.negative_prompt, negative_text_embeds, negative_valid_output_tokens);
+    models_.unload_text_encoder();
+    if (!text_ok)
+    {
+        fprintf(stderr, "pipeline text encoding failed\n");
+        return false;
+    }
+    if (timings) timings->text_encoder_ms = ms_since(text_begin);
+    if (!request.dump_prefix.empty())
+    {
+        write_f32(request.dump_prefix + ".text.f32", text_embeds);
+        if (do_true_cfg)
+            write_f32(request.dump_prefix + ".negative_text.f32",
+                      negative_text_embeds);
+    }
+
+    const int image_tokens = latent_height * latent_width;
+    const int transformer_text_tokens = text_config_.dynamic_sequence
+        ? valid_output_tokens : text_tokens_;
+    const int negative_transformer_text_tokens = do_true_cfg
+        ? (text_config_.dynamic_sequence ? negative_valid_output_tokens
+                                         : text_tokens_)
+        : transformer_text_tokens;
+    if (transformer_text_tokens <= 0
+        || text_embeds.size() !=
+           (size_t)transformer_text_tokens * kTextDim
+        || (do_true_cfg
+            && (negative_transformer_text_tokens <= 0
+                || negative_text_embeds.size() !=
+                   (size_t)negative_transformer_text_tokens * kTextDim)))
+    {
+        fprintf(stderr,
+                "text encoder output capacity failed: pos_tokens=%d "
+                "pos_size=%zu neg_tokens=%d neg_size=%zu\n",
+                transformer_text_tokens, text_embeds.size(),
+                negative_transformer_text_tokens, negative_text_embeds.size());
+        return false;
+    }
+    std::vector<float> latents;
+    if (!request.rng_mat_path.empty())
+    {
+        if (!read_f32(request.rng_mat_path, (size_t)image_tokens * kLatentDim, latents))
+        {
+            fprintf(stderr, "failed to read rng mat %s expected %zu floats\n",
+                    request.rng_mat_path.c_str(),
+                    (size_t)image_tokens * kLatentDim);
+            return false;
+        }
+    }
+    else
+    {
+        latents.resize((size_t)image_tokens * kLatentDim);
+        std::mt19937 gen(static_cast<unsigned int>(request.seed));
+        std::normal_distribution<float> dist(0.f, 1.f);
+        for (float& value : latents)
+            value = dist(gen);
+    }
+    if (!request.dump_prefix.empty())
+        write_f32(request.dump_prefix + ".rng_initial.f32", latents);
+
+    std::vector<float> cos;
+    std::vector<float> sin;
+    std::vector<float> mask;
+    QwenTransformer::make_rope(transformer_text_tokens, transformer_text_tokens, latent_height, latent_width, cos, sin);
+    QwenTransformer::make_attention_mask(transformer_text_tokens, transformer_text_tokens, image_tokens, mask);
+
+    std::vector<float> negative_cos;
+    std::vector<float> negative_sin;
+    std::vector<float> negative_mask;
+    if (do_true_cfg)
+    {
+        QwenTransformer::make_rope(negative_transformer_text_tokens, negative_transformer_text_tokens, latent_height, latent_width, negative_cos, negative_sin);
+        QwenTransformer::make_attention_mask(negative_transformer_text_tokens, negative_transformer_text_tokens, image_tokens, negative_mask);
+    }
+    if (!models_.load_transformer(paths_, config_))
+    {
+        fprintf(stderr, "pipeline transformer graph load failed\n");
+        return false;
+    }
+    const std::vector<float> sigmas = QwenScheduler::make_sigmas(request.steps, image_tokens, false);
+    const Clock::time_point transformer_begin = Clock::now();
+    bool transformer_ok = true;
+    {
+        QwenTransformer positive_transformer(models_, config_, transformer_text_tokens, image_tokens, latent_height, latent_width);
+        QwenTransformer negative_transformer(models_, config_, negative_transformer_text_tokens, image_tokens, latent_height, latent_width);
+        for (int step = 0; step < request.steps; step++)
+        {
+            std::vector<float> noise;
+            if (!positive_transformer.run(latents, text_embeds, sigmas[step], cos, sin, mask, noise))
+            {
+                fprintf(stderr, "pipeline transformer failed at step %d\n",
+                        step);
+                transformer_ok = false;
+                break;
+            }
+            if (do_true_cfg)
+            {
+                std::vector<float> negative_noise;
+                if (!negative_transformer.run(latents, negative_text_embeds, sigmas[step], negative_cos, negative_sin, negative_mask, negative_noise) || negative_noise.size() != noise.size())
+                {
+                    fprintf(stderr, "pipeline negative transformer failed at step %d\n", step);
+                    transformer_ok = false;
+                    break;
+                }
+                for (size_t i = 0; i < noise.size(); i++)
+                    noise[i] = negative_noise[i] + request.guidance_scale * (noise[i] - negative_noise[i]);
+            }
+
+            const float dt = sigmas[step + 1] - sigmas[step];
+            for (size_t i = 0; i < latents.size(); i++)
+                latents[i] += dt * noise[i];
+            if (!request.dump_prefix.empty())
+            {
+                write_f32(request.dump_prefix + ".noise_step_" + std::to_string(step) + ".f32", noise);
+                if (step == 0)
+                {
+                    write_f32(request.dump_prefix + ".initial_latent.f32", latents);
+                    write_f32(request.dump_prefix + ".noise.f32", noise);
+                }
+            }
+        }
+    }
+    models_.unload_transformer();
+    if (!transformer_ok)
+        return false;
+    if (timings) timings->transformer_ms = ms_since(transformer_begin);
+    if (!request.dump_prefix.empty())
+        write_f32(request.dump_prefix + ".final_latent.f32", latents);
+
+    if (!models_.load_vae_decoder(paths_, config_))
+    {
+        fprintf(stderr, "pipeline VAE decoder graph load failed\n");
+        return false;
+    }
+    std::vector<float> image;
+    const Clock::time_point vae_begin = Clock::now();
+    bool vae_ok = false;
+    {
+        QwenVaeDecoder decoder(*models_.vae_decoder, config_);
+        vae_ok = decoder.decode(latents, width, height, image);
+    }
+    models_.unload_vae_decoder();
+    if (!vae_ok)
+    {
+        fprintf(stderr, "pipeline VAE decoder failed\n");
+        return false;
+    }
+    if (timings) timings->vae_decoder_ms = ms_since(vae_begin);
+    if (!request.dump_prefix.empty())
+        write_f32(request.dump_prefix + ".image.f32", image);
+    if (!request.output.empty() && !save_rgba_float_png(request.output, image, width, height))
+    {
+        fprintf(stderr, "failed to save output %s\n", request.output.c_str());
+        return false;
+    }
+    if (timings) timings->total_ms = ms_since(text_begin);
+    return true;
+}
+}

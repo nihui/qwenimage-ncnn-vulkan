@@ -1,0 +1,55 @@
+// qwen-image implemented with ncnn library
+
+#pragma once
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "net.h"
+#include "runtime.h"
+
+namespace qwenimage {
+struct ModelPaths
+{
+    ModelFiles text_encoder;
+    ModelFiles text_encoder_edit;
+    ModelFiles vision_encoder;
+    ModelFiles vae_encoder;
+    ModelFiles vae_decoder;
+    ModelFiles transformer_input;
+    ModelFiles transformer_blocks_merged;
+    std::vector<ModelFiles> transformer_blocks;
+    ModelFiles transformer_output;
+};
+
+ModelPaths make_model_paths(const std::string& model_dir);
+bool validate_model_paths(const ModelPaths& paths, std::string* error = nullptr);
+bool validate_edit_model_paths(const ModelPaths& paths, std::string* error = nullptr);
+
+struct QwenModelSet
+{
+    // Keep only the currently active pipeline stage resident.  A Qwen
+    // generation uses tens of gigabytes of weights, so keeping every graph
+    // alive for the whole request defeats ncnn's allocator reclamation.
+    std::unique_ptr<ncnn::Net> text_encoder;
+    std::unique_ptr<ncnn::Net> vision_encoder;
+    std::unique_ptr<ncnn::Net> vae_encoder;
+    std::unique_ptr<ncnn::Net> vae_decoder;
+    std::unique_ptr<ncnn::Net> transformer_input;
+    std::vector<std::unique_ptr<ncnn::Net>> transformer_blocks;
+    std::unique_ptr<ncnn::Net> transformer_output;
+
+    bool load_text_encoder(const ModelPaths& paths, const RuntimeConfig& config, bool edit_mode = false);
+    bool load_vision_encoder(const ModelPaths& paths, const RuntimeConfig& config);
+    bool load_vae_encoder(const ModelPaths& paths, const RuntimeConfig& config);
+    bool load_vae_decoder(const ModelPaths& paths, const RuntimeConfig& config);
+    bool load_transformer(const ModelPaths& paths, const RuntimeConfig& config);
+
+    void unload_text_encoder();
+    void unload_vision_encoder();
+    void unload_vae_encoder();
+    void unload_vae_decoder();
+    void unload_transformer();
+    void unload_all();
+};
+}
