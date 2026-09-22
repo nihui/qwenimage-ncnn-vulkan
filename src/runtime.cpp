@@ -50,6 +50,9 @@ void configure_auto_low_vram(RuntimeConfig& config, int width, int height)
 }
 
 
+static constexpr int kVaeScale = 16;
+static constexpr int kVaeTilePadLatent = 16;
+
 static int align_up_16(int value)
 {
     return ((value + 15) / 16) * 16;
@@ -59,7 +62,8 @@ void get_optimal_vae_tile_size(int width, int height, const RuntimeConfig& confi
 {
     tile_width = width;
     tile_height = height;
-    if (width <= 0 || height <= 0 || width % 16 || height % 16
+    if (width <= 0 || height <= 0 || width % kVaeScale
+        || height % kVaeScale
         || !config.use_vulkan_compute || ncnn::get_gpu_count() <= 0)
         return;
 
@@ -70,9 +74,9 @@ void get_optimal_vae_tile_size(int width, int height, const RuntimeConfig& confi
     if (heap_budget == 0)
         return;
 
-    // Match the zimage VAE policy: reserve an activation area proportional
-    // to the reported Vulkan heap budget.  Qwen's VAE has a 16x spatial
-    // reduction, so all candidate tiles are aligned to 16 pixels.
+    // Reserve an activation area proportional to the reported Vulkan heap
+    // budget.  The full bottleneck pass is always run once; the area limit
+    // applies to the local reconstruction tile including its overlap.
     uint64_t max_tile_area =
         (uint64_t)heap_budget * 1024u * 1024u / 6000u;
     if (max_tile_area < 16u * 16u)
@@ -97,8 +101,15 @@ void get_optimal_vae_tile_size(int width, int height, const RuntimeConfig& confi
             int candidate_height = align_up_16((height + ny - 1) / ny);
             if (candidate_height > height)
                 candidate_height = height;
-            if ((uint64_t)candidate_width * candidate_height
-                > max_tile_area)
+            const int padded_width = std::min(
+                width, candidate_width
+                    + 2 * kVaeTilePadLatent * kVaeScale);
+            const int padded_height = std::min(
+                height, candidate_height
+                    + 2 * kVaeTilePadLatent * kVaeScale);
+            const uint64_t padded_area =
+                (uint64_t)padded_width * padded_height;
+            if (padded_area > max_tile_area)
                 continue;
 
             const double tile_ratio =
@@ -120,8 +131,7 @@ void get_optimal_vae_tile_size(int width, int height, const RuntimeConfig& confi
                 ((double)std::max(1, last_width) / candidate_width)
                 * ((double)std::max(1, last_height) / candidate_height);
             const double area_score =
-                (double)((uint64_t)candidate_width * candidate_height)
-                / (double)max_tile_area;
+                (double)padded_area / (double)max_tile_area;
             const double score = 0.45 * utilization
                                + 0.35 * ratio_score
                                + 0.20 * area_score;

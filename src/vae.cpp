@@ -3,7 +3,6 @@
 #include "vae.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -11,7 +10,7 @@ namespace qwenimage {
 namespace {
 constexpr int kChannels = 64;
 constexpr int kVaeScale = 16;
-constexpr int kTilePadLatent = 4;
+constexpr int kTilePadLatent = 16;
 
 const float kMean[kChannels] = {
     0.5126f, 0.7721f, -0.0631f, 1.3506f, -0.7855f, -2.1025f, -0.3458f, 1.3722f,
@@ -35,7 +34,7 @@ const float kStd[kChannels] = {
 };
 ncnn::Mat make_image_mat(int width, int height, int channels, const std::vector<float>& data)
 {
-    return ncnn::Mat(width, height, 1, channels, (void*)data.data()).clone();
+    return ncnn::Mat(width, height, channels, (void*)data.data()).clone();
 }
 
 ncnn::Mat make_channel_mat(int width, int height, int channels, const std::vector<float>& data)
@@ -108,66 +107,6 @@ bool crop_mat(const ncnn::Mat& source, int top, int bottom, int left, int right,
     return true;
 }
 
-bool resize_mat(const ncnn::Mat& source, int width, int height, ncnn::Mat& destination)
-{
-    if (source.empty() || source.elempack != 1
-        || source.elembits() != 32
-        || (source.dims != 3 && source.dims != 4)
-        || width <= 0 || height <= 0)
-        return false;
-
-    const int depth = source.dims == 4 ? source.d : 1;
-    if (source.dims == 4)
-        destination.create(width, height, depth, source.c, 4u, 1);
-    else
-        destination.create(width, height, source.c, 4u, 1);
-    if (destination.empty())
-        return false;
-
-    for (int c = 0; c < source.c; c++)
-    {
-        const ncnn::Mat source_channel = source.channel(c);
-        ncnn::Mat destination_channel = destination.channel(c);
-        for (int d = 0; d < depth; d++)
-        {
-            const ncnn::Mat source_plane = source.dims == 4
-                ? source_channel.depth(d) : source_channel;
-            ncnn::Mat destination_plane = destination.dims == 4
-                ? destination_channel.depth(d) : destination_channel;
-            for (int y = 0; y < height; y++)
-            {
-                const float source_y =
-                    ((float)y + 0.5f) * source.h / height - 0.5f;
-                const int y0 = std::max(0, std::min(source.h - 1,
-                                      (int)std::floor(source_y)));
-                const int y1 = std::max(0, std::min(source.h - 1, y0 + 1));
-                const float wy = std::max(
-                    0.f, std::min(1.f, source_y - std::floor(source_y)));
-                const float* row0 = source_plane.row(y0);
-                const float* row1 = source_plane.row(y1);
-                float* destination_row = destination_plane.row(y);
-                for (int x = 0; x < width; x++)
-                {
-                    const float source_x =
-                        ((float)x + 0.5f) * source.w / width - 0.5f;
-                    const int x0 = std::max(0, std::min(source.w - 1,
-                                          (int)std::floor(source_x)));
-                    const int x1 = std::max(0, std::min(source.w - 1, x0 + 1));
-                    const float wx = std::max(
-                        0.f, std::min(1.f, source_x - std::floor(source_x)));
-                    const float top_value =
-                        row0[x0] * (1.f - wx) + row0[x1] * wx;
-                    const float bottom_value =
-                        row1[x0] * (1.f - wx) + row1[x1] * wx;
-                    destination_row[x] =
-                        top_value * (1.f - wy) + bottom_value * wy;
-                }
-            }
-        }
-    }
-    return true;
-}
-
 bool extract_blob(const ncnn::Net& net, const RuntimeConfig& config, ModelStage stage, const ncnn::Mat& input, const char* extra_name, const ncnn::Mat* extra, const char* output_name, ncnn::Mat& output)
 {
     ncnn::Extractor extractor = net.create_extractor();
@@ -214,7 +153,8 @@ void normalize_latent(const ncnn::Mat& latent, int width, int height, std::vecto
 
 bool paste_encoder_tile(const ncnn::Mat& encoder_out, int crop_top, int crop_bottom, int crop_left, int crop_right, int output_x, int output_y, int output_width, int output_height, std::vector<float>& packed)
 {
-    if (encoder_out.dims != 4 || encoder_out.d != 1
+    if ((encoder_out.dims != 3
+         && (encoder_out.dims != 4 || encoder_out.d != 1))
         || encoder_out.c != kChannels || encoder_out.elempack != 1
         || encoder_out.elembits() != 32)
         return false;
@@ -236,8 +176,8 @@ bool paste_encoder_tile(const ncnn::Mat& encoder_out, int crop_top, int crop_bot
                 const float value =
                     source[((size_t)c * encoder_out.h + crop_top + y)
                            * encoder_out.w + crop_left + x];
-                packed[((size_t)c * output_height + output_y + y)
-                       * output_width + output_x + x] =
+                packed[((size_t)(output_y + y) * output_width
+                         + output_x + x) * kChannels + c] =
                     (value - kMean[c]) / kStd[c];
             }
     return true;
@@ -279,22 +219,17 @@ bool encode_tiled(const ncnn::Net& net, const RuntimeConfig& config, const std::
     if (latent_tile_width <= 0 || latent_tile_height <= 0)
         return false;
 
-    const int tile_image_width = latent_tile_width * kVaeScale;
-    const int tile_image_height = latent_tile_height * kVaeScale;
     ncnn::Mat image = make_image_mat(width, height, 4, rgba);
-    ncnn::Mat image_small;
-    if (!resize_mat(image, tile_image_width, tile_image_height, image_small))
-        return false;
 
-    // Blob 296 is the encoder's post-attention bottleneck residual.  Run it
-    // once at the reduced tile size and resize it to provide global context
-    // to every local extractor invocation.
-    ncnn::Mat attn_small;
-    if (!extract_blob(net, config, ModelStage::VaeEncoder, image_small,
-                      nullptr, nullptr, "296", attn_small))
-        return false;
+    // Blob 296 is the encoder's post-attention bottleneck residual. Extract
+    // it at the original resolution once, then run only the local tail of
+    // the graph for each tile.
     ncnn::Mat attn;
-    if (!resize_mat(attn_small, latent_width, latent_height, attn))
+    if (!extract_blob(net, config, ModelStage::VaeEncoder, image,
+                      nullptr, nullptr, "296", attn))
+        return false;
+    if (attn.dims != 3 || attn.w != latent_width
+        || attn.h != latent_height || attn.c != 768)
         return false;
 
     packed.assign((size_t)latent_width * latent_height * kChannels, 0.f);
@@ -380,20 +315,16 @@ bool decode_tiled(const ncnn::Net& net, const RuntimeConfig& config, const std::
 
     ncnn::Mat latent = make_channel_mat(latent_width, latent_height,
                                         kChannels, latent_data);
-    ncnn::Mat latent_small;
-    if (!resize_mat(latent, latent_tile_width, latent_tile_height,
-                    latent_small))
-        return false;
 
-    // Blob 45 is the decoder's post-attention bottleneck residual.  The
-    // reduced pass supplies an inexpensive global attention estimate, while
-    // each local pass keeps only the convolutional/reconstruction footprint.
-    ncnn::Mat attn_small;
-    if (!extract_blob(net, config, ModelStage::VaeDecoder, latent_small,
-                      nullptr, nullptr, "45", attn_small))
-        return false;
+    // Blob 45 is the decoder's post-attention bottleneck residual. Keep its
+    // original spatial resolution and execute only the local reconstruction
+    // tail for each tile.
     ncnn::Mat attn;
-    if (!resize_mat(attn_small, latent_width, latent_height, attn))
+    if (!extract_blob(net, config, ModelStage::VaeDecoder, latent,
+                      nullptr, nullptr, "45", attn))
+        return false;
+    if (attn.dims != 3 || attn.w != latent_width
+        || attn.h != latent_height || attn.c != 1152)
         return false;
 
     rgba.assign((size_t)4 * width * height, 0.f);
@@ -482,9 +413,12 @@ bool QwenVaeEncoder::encode(const std::vector<float>& rgba, int width, int heigh
                                         ModelStage::VaeEncoder);
         const int latent_width = width / kVaeScale;
         const int latent_height = height / kVaeScale;
-        if (latent.empty() || latent.dims != 4 || latent.elempack != 1
+        if (latent.empty()
+            || (latent.dims != 3
+                && (latent.dims != 4 || latent.d != 1))
+            || latent.elempack != 1
             || latent.w != latent_width || latent.h != latent_height
-            || latent.d != 1 || latent.c != kChannels)
+            || latent.c != kChannels)
             return false;
         normalize_latent(latent, width, height, packed);
         return true;

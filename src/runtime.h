@@ -40,8 +40,8 @@ struct RuntimeConfig
     bool use_packing_layout = true;
     // -1 selects automatically from the Vulkan heap budget, 0 disables
     // host-backed weights, and 1 forces low-VRAM mode.
-    int low_vram = 1;
-    bool use_weights_in_host_memory = true;
+    int low_vram = -1;
+    bool use_weights_in_host_memory = false;
     bool use_local_pool_allocator = true;
     bool use_winograd_convolution = true;
 
