@@ -171,7 +171,6 @@ bool resize_mat(const ncnn::Mat& source, int width, int height, ncnn::Mat& desti
 bool extract_blob(const ncnn::Net& net, const RuntimeConfig& config, ModelStage stage, const ncnn::Mat& input, const char* extra_name, const ncnn::Mat* extra, const char* output_name, ncnn::Mat& output)
 {
     ncnn::Extractor extractor = net.create_extractor();
-    set_extractor_light_mode(extractor);
     if (extractor.input("in0", input) != 0)
         return false;
     if (extra_name != nullptr && extra != nullptr
@@ -474,7 +473,6 @@ bool QwenVaeEncoder::encode(const std::vector<float>& rgba, int width, int heigh
     if (tile_width >= width && tile_height >= height)
     {
         ncnn::Extractor extractor = net_.create_extractor();
-        set_extractor_light_mode(extractor);
         ncnn::Mat input = make_image_mat(width, height, 4, rgba);
         ncnn::Mat raw;
         if (extractor.input("in0", input) != 0
@@ -527,7 +525,6 @@ bool QwenVaeDecoder::decode(const std::vector<float>& packed, int width, int hei
                         packed[((size_t)y * latent_width + x) * kChannels + c]
                         * kStd[c] + kMean[c];
         ncnn::Extractor extractor = net_.create_extractor();
-        set_extractor_light_mode(extractor);
         ncnn::Mat input = make_channel_mat(latent_width, latent_height,
                                            kChannels, latent_data);
         ncnn::Mat raw;

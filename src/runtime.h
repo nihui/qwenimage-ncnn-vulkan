@@ -40,8 +40,8 @@ struct RuntimeConfig
     bool use_packing_layout = true;
     // -1 selects automatically from the Vulkan heap budget, 0 disables
     // host-backed weights, and 1 forces low-VRAM mode.
-    int low_vram = -1;
-    bool use_weights_in_host_memory = false;
+    int low_vram = 1;
+    bool use_weights_in_host_memory = true;
     bool use_local_pool_allocator = true;
     bool use_winograd_convolution = true;
 
@@ -70,7 +70,6 @@ ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage);
 
 bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& config, ModelStage stage);
 
-void set_extractor_light_mode(ncnn::Extractor& extractor);
 ncnn::Mat clone_fp32(const ncnn::Mat& source, const RuntimeConfig& config);
 
 } // namespace qwenimage

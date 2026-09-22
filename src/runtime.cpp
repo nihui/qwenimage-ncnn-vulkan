@@ -203,11 +203,6 @@ bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& conf
     return true;
 }
 
-void set_extractor_light_mode(ncnn::Extractor& extractor)
-{
-    extractor.set_light_mode(true);
-}
-
 ncnn::Mat clone_fp32(const ncnn::Mat& source, const RuntimeConfig& config)
 {
     ncnn::Option option = make_ncnn_option(config, ModelStage::Transformer);

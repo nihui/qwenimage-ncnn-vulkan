@@ -63,7 +63,6 @@ bool QwenVisionEncoder::encode(const std::vector<float>& patch_values, const std
         return false;
 
     ncnn::Extractor extractor = net_.create_extractor();
-    extractor.set_light_mode(false);
     ncnn::Mat patch = float_mat(kPatchDim, patch_tokens, patch_values);
     ncnn::Mat position = float_mat(kPositionDim, patch_tokens, position_values);
     // RotaryEmbed consumes the compact [sequence, head_dim / 2] cache.

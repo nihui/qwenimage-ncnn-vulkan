@@ -101,7 +101,6 @@ bool QwenTransformer::run(const std::vector<float>& latents, const std::vector<f
     }
 
     ncnn::Extractor input = models_.transformer_input->create_extractor();
-    set_extractor_light_mode(input);
     ncnn::Mat in_latents = float_mat(kLatentDim, image_tokens_, latents);
     ncnn::Mat in_text = float_mat(kHiddenDim, text_tokens_, text);
     ncnn::Mat in_timestep(1);
@@ -149,7 +148,6 @@ bool QwenTransformer::run(const std::vector<float>& latents, const std::vector<f
     for (const auto& net : models_.transformer_blocks)
     {
         ncnn::Extractor block = net->create_extractor();
-        set_extractor_light_mode(block);
         if (block.input("in0", hidden) != 0
             || block.input("in1", in_modulation) != 0
             || block.input("in2", in_cos) != 0
@@ -176,7 +174,6 @@ bool QwenTransformer::run(const std::vector<float>& latents, const std::vector<f
     }
 
     ncnn::Extractor output = models_.transformer_output->create_extractor();
-    set_extractor_light_mode(output);
     if (output.input("in0", hidden) != 0
         || output.input("in1", in_temb) != 0)
     {
@@ -450,7 +447,6 @@ bool QwenTransformer::run_edit(const std::vector<float>& condition_latents, cons
     all_latents.insert(all_latents.end(), latents.begin(), latents.end());
 
     ncnn::Extractor input = models_.transformer_input->create_extractor();
-    set_extractor_light_mode(input);
     ncnn::Mat in_latents = float_mat(kLatentDim, condition_tokens + target_tokens, all_latents);
     ncnn::Mat in_text = float_mat(kHiddenDim, text_tokens, text);
     ncnn::Mat in_timestep(1);
@@ -484,7 +480,6 @@ bool QwenTransformer::run_edit(const std::vector<float>& condition_latents, cons
     for (const auto& net : models_.transformer_blocks)
     {
         ncnn::Extractor block = net->create_extractor();
-        set_extractor_light_mode(block);
         if (block.input("in0", in_hidden) != 0
             || block.input("in1", in_modulation) != 0
             || block.input("in2", in_cos) != 0
@@ -501,7 +496,6 @@ bool QwenTransformer::run_edit(const std::vector<float>& condition_latents, cons
     }
 
     ncnn::Extractor output = models_.transformer_output->create_extractor();
-    set_extractor_light_mode(output);
     if (output.input("in0", in_hidden) != 0
         || output.input("in1", in_temb) != 0)
         return false;

@@ -79,7 +79,6 @@ bool QwenTextEncoder::encode(const std::vector<int>& input_ids, int valid_input_
     ncnn::Mat in_mask = attention_mask_mat(input_tokens, valid_input_tokens);
 
     ncnn::Extractor extractor = models_.text_encoder->create_extractor();
-    set_extractor_light_mode(extractor);
     if (extractor.input("in0", in_ids) != 0
         || extractor.input("in1", in_cos) != 0
         || extractor.input("in2", in_sin) != 0
@@ -180,7 +179,6 @@ bool QwenTextEncoder::encode_edit(const std::vector<int>& input_ids, const std::
     ncnn::Mat in_deep2 = float_mat(kImageHidden, tokens, deepstack[2]);
 
     ncnn::Extractor extractor = models_.text_encoder->create_extractor();
-    set_extractor_light_mode(extractor);
     if (extractor.input("in0", in_ids) != 0
         || extractor.input("in1", in_cos) != 0
         || extractor.input("in2", in_sin) != 0
