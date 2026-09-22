@@ -199,11 +199,9 @@ bool QwenTextEncoder::encode_edit(const std::vector<int>& input_ids, const std::
         return false;
     }
     ncnn::Mat hidden = clone_fp32(raw, config_);
-    if (hidden.empty() || hidden.elempack != 1
-        || hidden.w != kImageHidden || hidden.h != tokens)
+    if (hidden.empty() || hidden.elempack != 1 || hidden.w != kImageHidden || hidden.h != tokens)
     {
-        fprintf(stderr, "edit text encoder shape failed: %dx%dx%d\n",
-                hidden.w, hidden.h, hidden.c);
+        fprintf(stderr, "edit text encoder shape failed: %dx%dx%d\n", hidden.w, hidden.h, hidden.c);
         return false;
     }
     const float* source = static_cast<const float*>(hidden.data);

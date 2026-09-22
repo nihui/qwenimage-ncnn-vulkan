@@ -336,15 +336,39 @@ bool save_rgba_float_png(const std::string& path, const std::vector<float>& imag
         || image.size() != (size_t)4 * width * height)
         return false;
 
-    std::vector<unsigned char> pixels((size_t)width * height * 4);
+    const size_t dot = path.find_last_of('.');
+    std::string extension = dot == std::string::npos
+        ? std::string() : lowercase_path(path.substr(dot + 1));
+    const bool jpeg = extension == "jpg" || extension == "jpeg";
+    const int channels = jpeg ? 3 : 4;
+    std::vector<unsigned char> pixels((size_t)width * height * channels);
     for (int y = 0; y < height; y++)
         for (int x = 0; x < width; x++)
-            for (int c = 0; c < 4; c++)
+            for (int c = 0; c < channels; c++)
             {
                 const float value = std::max(0.f, std::min(1.f, image[((size_t)c * height + y) * width + x] * .5f + .5f));
-                pixels[((size_t)y * width + x) * 4 + c] =
+                pixels[((size_t)y * width + x) * channels + c] =
                     (unsigned char)std::lround(value * 255.f);
             }
+
+    if (jpeg)
+    {
+#if _WIN32
+        const std::wstring output = wide_path(path);
+        return jpeg_save(output.c_str(), width, height, 3, pixels.data()) != 0;
+#else
+        return jpeg_save(path.c_str(), width, height, 3, pixels.data()) != 0;
+#endif
+    }
+    if (extension == "webp")
+    {
+#if _WIN32
+        const std::wstring output = wide_path(path);
+        return webp_save(output.c_str(), width, height, 4, pixels.data()) != 0;
+#else
+        return webp_save(path.c_str(), width, height, 4, pixels.data()) != 0;
+#endif
+    }
     return save_png(path, width, height, 4, pixels.data());
 }
 

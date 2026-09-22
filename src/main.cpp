@@ -244,6 +244,7 @@ int main(int argc, char** argv)
             return 1;
         }
         config.vulkan_device_index = gpu_id;
+        fprintf(stderr, "using gpu-id = %d (%s)\n", gpu_id, ncnn::get_gpu_device(gpu_id)->info.device_name());
     }
     config.use_vulkan_compute = use_vulkan;
 

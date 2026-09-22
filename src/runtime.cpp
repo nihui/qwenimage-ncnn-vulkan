@@ -183,6 +183,13 @@ ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage)
             option.use_weights_in_host_memory = false;
         option.use_winograd_convolution = false;
     }
+
+    if (ncnn::get_gpu_info(config.vulkan_device_index).vendor_id() == 0x10de)
+    {
+        // nvidia bf16 matrix produce nan/inf
+        option.use_cooperative_matrix = false;
+    }
+
     return option;
 }
 

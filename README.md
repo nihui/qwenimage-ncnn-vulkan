@@ -131,7 +131,7 @@ qwenimage-ncnn-vulkan -b 4 -r 42 -p "A red flower." -o output.png
 
 With `-b` greater than one, outputs are saved as `output-0.png`, `output-1.png`, and so on. Each image uses the next seed value. Use `-i` once for each reference image, up to ten images. Text-to-image sizes must be multiples of 16; image-editing sizes must be multiples of 32.
 
-The output is an RGBA PNG. The alpha channel can be used for transparent image generation.
+The default output is an RGBA PNG. A jpg or jpeg suffix writes RGB JPEG output, and a webp suffix writes lossless RGBA WebP output. PNG and WebP alpha can be used for transparent image generation.
 
 ### Full Usages
 
