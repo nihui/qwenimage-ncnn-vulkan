@@ -62,6 +62,7 @@ struct EditRequest
     int height = 0;
     int drop_system_tokens = 0;
     int steps = 40;
+    int batch = 1;
     uint64_t seed = 42;
 };
 

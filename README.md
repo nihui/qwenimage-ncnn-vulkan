@@ -123,7 +123,13 @@ Set image size, denoise steps, seed and GPU
 qwenimage-ncnn-vulkan -s 1024,1024 -l 40 -r 42 -g 0 -p "A red flower." -o output.png
 ```
 
-Use `-i` once for each reference image, up to ten images. Text-to-image sizes must be multiples of 16; image-editing sizes must be multiples of 32.
+Batch generation
+
+```shell
+qwenimage-ncnn-vulkan -b 4 -r 42 -p "A red flower." -o output.png
+```
+
+With `-b` greater than one, outputs are saved as `output-0.png`, `output-1.png`, and so on. Each image uses the next seed value. Use `-i` once for each reference image, up to ten images. Text-to-image sizes must be multiples of 16; image-editing sizes must be multiples of 32.
 
 The output is an RGBA PNG. The alpha channel can be used for transparent image generation.
 
@@ -143,6 +149,7 @@ Usage: qwenimage-ncnn-vulkan -p prompt -o outfile [options]...
   -r random-seed       random seed (default=42)
   -m model-path        qwen-image model path (default=models/qwenimage21)
   -g gpu-id            GPU device to use (-1=cpu, default=auto)
+  -b batch-size        batched generation (default=1)
 ```
 
 If you encounter a crash or error, try upgrading your GPU driver:

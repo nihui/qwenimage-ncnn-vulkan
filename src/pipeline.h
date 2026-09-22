@@ -21,6 +21,7 @@ struct GenerateRequest
     int width = 0;
     int height = 0;
     int steps = 40;
+    int batch = 1;
     uint64_t seed = 42;
 };
 struct GenerateTimings

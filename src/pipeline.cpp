@@ -96,7 +96,8 @@ bool QwenImagePipeline::load(const std::string& model_dir, RuntimeConfig config,
 }
 bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings* timings)
 {
-    if (!loaded_ || request.prompt.empty() || request.steps <= 0)
+    if (!loaded_ || request.prompt.empty() || request.steps <= 0
+        || request.batch <= 0)
         return false;
     const int width = request.width > 0 ? request.width : width_;
     const int height = request.height > 0 ? request.height : height_;
@@ -114,6 +115,15 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     const int latent_height = height / 16;
     configure_auto_low_vram(config_, width, height);
     models_.unload_all();
+
+    if (request.batch > 1)
+    {
+        const std::string first = make_batch_output_path(request.output, 0, request.batch);
+        const std::string second = make_batch_output_path(request.output, 1, request.batch);
+        const std::string third = make_batch_output_path(request.output, 2, request.batch);
+        fprintf(stderr, "batch generation enabled. output-path will be %s %s %s ...\n",
+                first.c_str(), second.c_str(), third.c_str());
+    }
 
     QwenBpeTokenizer tokenizer = QwenBpeTokenizer::LoadFromFiles(model_dir_ + "/processor/vocab.txt", model_dir_ + "/processor/merges.txt", SpecialTokensConfig(), false, false, true);
     if (tokenizer.vocab_size() == 0) return false;
@@ -218,10 +228,11 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
                 negative_transformer_text_tokens, negative_text_embeds.size());
         return false;
     }
-    std::vector<float> latents;
+
+    std::vector<float> initial_latents;
     if (!request.rng_mat_path.empty())
     {
-        if (!read_f32(request.rng_mat_path, (size_t)image_tokens * kLatentDim, latents))
+        if (!read_f32(request.rng_mat_path, (size_t)image_tokens * kLatentDim, initial_latents))
         {
             fprintf(stderr, "failed to read rng mat %s expected %zu floats\n",
                     request.rng_mat_path.c_str(),
@@ -229,16 +240,6 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
             return false;
         }
     }
-    else
-    {
-        latents.resize((size_t)image_tokens * kLatentDim);
-        std::mt19937 gen(static_cast<unsigned int>(request.seed));
-        std::normal_distribution<float> dist(0.f, 1.f);
-        for (float& value : latents)
-            value = dist(gen);
-    }
-    if (!request.dump_prefix.empty())
-        write_f32(request.dump_prefix + ".rng_initial.f32", latents);
 
     std::vector<float> cos;
     std::vector<float> sin;
@@ -259,28 +260,50 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
         fprintf(stderr, "pipeline transformer graph load failed\n");
         return false;
     }
+
     const std::vector<float> sigmas = QwenScheduler::make_sigmas(request.steps, image_tokens, false);
+    std::vector<std::vector<float>> batch_latents(request.batch);
     const Clock::time_point transformer_begin = Clock::now();
     bool transformer_ok = true;
+    for (int b = 0; b < request.batch && transformer_ok; b++)
     {
+        std::vector<float> latents;
+        if (!initial_latents.empty())
+        {
+            latents = initial_latents;
+        }
+        else
+        {
+            latents.resize((size_t)image_tokens * kLatentDim);
+            std::mt19937 gen(static_cast<unsigned int>(request.seed + (uint64_t)b));
+            std::normal_distribution<float> dist(0.f, 1.f);
+            for (float& value : latents)
+                value = dist(gen);
+        }
+
+        const std::string dump_prefix = request.dump_prefix.empty()
+            ? std::string()
+            : request.dump_prefix + (request.batch > 1 ? "-" + std::to_string(b) : "");
+        if (!dump_prefix.empty())
+            write_f32(dump_prefix + ".rng_initial.f32", latents);
+
         QwenTransformer positive_transformer(models_, config_, transformer_text_tokens, image_tokens, latent_height, latent_width);
         QwenTransformer negative_transformer(models_, config_, negative_transformer_text_tokens, image_tokens, latent_height, latent_width);
-        for (int step = 0; step < request.steps; step++)
+        for (int z = 0; z < request.steps; z++)
         {
             std::vector<float> noise;
-            if (!positive_transformer.run(latents, text_embeds, sigmas[step], cos, sin, mask, noise))
+            if (!positive_transformer.run(latents, text_embeds, sigmas[z], cos, sin, mask, noise))
             {
-                fprintf(stderr, "pipeline transformer failed at step %d\n",
-                        step);
+                fprintf(stderr, "pipeline transformer failed at step %d of image %d\n", z, b);
                 transformer_ok = false;
                 break;
             }
             if (do_true_cfg)
             {
                 std::vector<float> negative_noise;
-                if (!negative_transformer.run(latents, negative_text_embeds, sigmas[step], negative_cos, negative_sin, negative_mask, negative_noise) || negative_noise.size() != noise.size())
+                if (!negative_transformer.run(latents, negative_text_embeds, sigmas[z], negative_cos, negative_sin, negative_mask, negative_noise) || negative_noise.size() != noise.size())
                 {
-                    fprintf(stderr, "pipeline negative transformer failed at step %d\n", step);
+                    fprintf(stderr, "pipeline negative transformer failed at step %d of image %d\n", z, b);
                     transformer_ok = false;
                     break;
                 }
@@ -288,53 +311,85 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
                     noise[i] = negative_noise[i] + request.guidance_scale * (noise[i] - negative_noise[i]);
             }
 
-            const float dt = sigmas[step + 1] - sigmas[step];
+            const float dt = sigmas[z + 1] - sigmas[z];
             for (size_t i = 0; i < latents.size(); i++)
                 latents[i] += dt * noise[i];
-            if (!request.dump_prefix.empty())
+            if (!dump_prefix.empty())
             {
-                write_f32(request.dump_prefix + ".noise_step_" + std::to_string(step) + ".f32", noise);
-                if (step == 0)
+                write_f32(dump_prefix + ".noise_step_" + std::to_string(z) + ".f32", noise);
+                if (z == 0)
                 {
-                    write_f32(request.dump_prefix + ".initial_latent.f32", latents);
-                    write_f32(request.dump_prefix + ".noise.f32", noise);
+                    write_f32(dump_prefix + ".initial_latent.f32", latents);
+                    write_f32(dump_prefix + ".noise.f32", noise);
                 }
             }
+            if (request.batch > 1)
+            {
+                fprintf(stderr, "step %d/%d of image %d/%d done\n", z + 1, request.steps, b + 1, request.batch);
+            }
+            else
+            {
+                fprintf(stderr, "step %d/%d done\n", z + 1, request.steps);
+            }
+        }
+        if (transformer_ok)
+        {
+            if (!dump_prefix.empty())
+                write_f32(dump_prefix + ".final_latent.f32", latents);
+            batch_latents[b] = std::move(latents);
         }
     }
     models_.unload_transformer();
     if (!transformer_ok)
         return false;
     if (timings) timings->transformer_ms = ms_since(transformer_begin);
-    if (!request.dump_prefix.empty())
-        write_f32(request.dump_prefix + ".final_latent.f32", latents);
 
     if (!models_.load_vae_decoder(paths_, config_))
     {
         fprintf(stderr, "pipeline VAE decoder graph load failed\n");
         return false;
     }
-    std::vector<float> image;
-    const Clock::time_point vae_begin = Clock::now();
-    bool vae_ok = false;
+    double vae_decoder_ms = 0.0;
+    bool vae_ok = true;
     {
         QwenVaeDecoder decoder(*models_.vae_decoder, config_);
-        vae_ok = decoder.decode(latents, width, height, image);
+        for (int b = 0; b < request.batch; b++)
+        {
+            std::vector<float> image;
+            const Clock::time_point decode_begin = Clock::now();
+            if (!decoder.decode(batch_latents[b], width, height, image))
+            {
+                fprintf(stderr, "pipeline VAE decoder failed for image %d\n", b);
+                vae_ok = false;
+                break;
+            }
+            vae_decoder_ms += ms_since(decode_begin);
+
+            const std::string dump_prefix = request.dump_prefix.empty()
+                ? std::string()
+                : request.dump_prefix + (request.batch > 1 ? "-" + std::to_string(b) : "");
+            if (!dump_prefix.empty())
+                write_f32(dump_prefix + ".image.f32", image);
+            if (!request.output.empty())
+            {
+                const std::string output_path = make_batch_output_path(request.output, b, request.batch);
+                if (!save_rgba_float_png(output_path, image, width, height))
+                {
+                    fprintf(stderr, "failed to save output %s\n", output_path.c_str());
+                    vae_ok = false;
+                    break;
+                }
+            }
+            if (request.batch > 1)
+                fprintf(stderr, "vae of image %d/%d done\n", b + 1, request.batch);
+            else
+                fprintf(stderr, "vae done\n");
+        }
     }
     models_.unload_vae_decoder();
     if (!vae_ok)
-    {
-        fprintf(stderr, "pipeline VAE decoder failed\n");
         return false;
-    }
-    if (timings) timings->vae_decoder_ms = ms_since(vae_begin);
-    if (!request.dump_prefix.empty())
-        write_f32(request.dump_prefix + ".image.f32", image);
-    if (!request.output.empty() && !save_rgba_float_png(request.output, image, width, height))
-    {
-        fprintf(stderr, "failed to save output %s\n", request.output.c_str());
-        return false;
-    }
+    if (timings) timings->vae_decoder_ms = vae_decoder_ms;
     if (timings) timings->total_ms = ms_since(text_begin);
     return true;
 }

@@ -43,6 +43,7 @@ static int getopt(int argc, char* const argv[], const char* optstring)
 #include "gpu.h"
 #include "edit_pipeline.h"
 #include "edit_input.h"
+#include "image_io.h"
 #include "pipeline.h"
 
 using namespace qwenimage;
@@ -86,6 +87,19 @@ static void print_help()
     fprintf(stdout, "  -r random-seed       random seed (default=42)\n");
     fprintf(stdout, "  -m model-path        qwen-image model path (default=models/qwenimage21)\n");
     fprintf(stdout, "  -g gpu-id            GPU device to use (-1=cpu, default=auto)\n");
+    fprintf(stdout, "  -b batch-size        batched generation (default=1)\n");
+}
+
+static void print_saved_paths(const std::string& output, int batch)
+{
+    if (batch <= 1)
+    {
+        fprintf(stdout, "saved %s\n", output.c_str());
+        return;
+    }
+    const std::string first = make_batch_output_path(output, 0, batch);
+    const std::string last = make_batch_output_path(output, batch - 1, batch);
+    fprintf(stdout, "saved %s through %s\n", first.c_str(), last.c_str());
 }
 
 static void print_edit_timings(const EditRequest& request, const EditTimings& timings)
@@ -96,7 +110,7 @@ static void print_edit_timings(const EditRequest& request, const EditTimings& ti
     fprintf(stdout, "transformer: %g ms\n", timings.transformer_ms);
     fprintf(stdout, "vae decoder: %g ms\n", timings.vae_decoder_ms);
     fprintf(stdout, "total: %g ms\n", timings.total_ms);
-    fprintf(stdout, "saved %s\n", request.output.c_str());
+    print_saved_paths(request.output, request.batch);
 }
 
 } // namespace
@@ -113,7 +127,7 @@ int main(int argc, char** argv)
     int gpu_id = gpu_id_auto;
 
     int opt;
-    while ((opt = getopt(argc, argv, "p:n:w:o:i:s:l:r:m:g:h")) != -1)
+    while ((opt = getopt(argc, argv, "p:n:w:o:i:s:l:r:m:g:b:h")) != -1)
     {
         switch (opt)
         {
@@ -163,6 +177,14 @@ int main(int argc, char** argv)
             if (gpu_id < -1)
             {
                 fprintf(stderr, "invalid gpu-id: %s\n", optarg);
+                return 2;
+            }
+            break;
+        case 'b':
+            request.batch = atoi(optarg);
+            if (request.batch <= 0)
+            {
+                fprintf(stderr, "invalid batch-size: %s\n", optarg);
                 return 2;
             }
             break;
@@ -237,6 +259,7 @@ int main(int argc, char** argv)
             return 1;
         }
         edit_request.guidance_scale = request.guidance_scale;
+        edit_request.batch = request.batch;
 
         QwenImageEditPipeline pipeline;
         if (!pipeline.load(model_dir, config, &error))
@@ -272,6 +295,6 @@ int main(int argc, char** argv)
     fprintf(stdout, "transformer: %g ms\n", timings.transformer_ms);
     fprintf(stdout, "vae decoder: %g ms\n", timings.vae_decoder_ms);
     fprintf(stdout, "total: %g ms\n", timings.total_ms);
-    fprintf(stdout, "saved %s\n", request.output.c_str());
+    print_saved_paths(request.output, request.batch);
     return 0;
 }

@@ -315,6 +315,21 @@ bool save_float_png(const std::string& path, const std::vector<float>& image, in
     return save_png(path, width, height, 3, pixels.data());
 }
 
+std::string make_batch_output_path(const std::string& path, int b, int batch)
+{
+    if (batch <= 1)
+        return path;
+
+    const size_t slash = path.find_last_of("/\\");
+    const size_t dot = path.find_last_of('.');
+    const bool has_extension = dot != std::string::npos
+        && (slash == std::string::npos || dot > slash);
+    const std::string suffix = "-" + std::to_string(b);
+    if (!has_extension)
+        return path + suffix;
+    return path.substr(0, dot) + suffix + path.substr(dot);
+}
+
 bool save_rgba_float_png(const std::string& path, const std::vector<float>& image, int width, int height)
 {
     if (width <= 0 || height <= 0

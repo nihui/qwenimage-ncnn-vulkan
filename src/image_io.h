@@ -26,6 +26,7 @@ bool load_rgb_image(const std::string& path, QwenRgbImage& image);
 bool load_rgba_image(const std::string& path, QwenRgbaImage& image);
 bool save_rgb_png(const std::string& path, const QwenRgbImage& image);
 bool save_float_png(const std::string& path, const std::vector<float>& image, int width, int height);
+std::string make_batch_output_path(const std::string& path, int b, int batch);
 
 bool save_rgba_float_png(const std::string& path, const std::vector<float>& image, int width, int height);
 } // namespace qwenimage

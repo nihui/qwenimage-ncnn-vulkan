@@ -395,6 +395,8 @@ bool QwenVaeEncoder::encode(const std::vector<float>& rgba, int width, int heigh
         return false;
 
     choose_tile_size(width, height, config_, tile_width, tile_height, tile_width, tile_height);
+    fprintf(stderr, "vae encoder tile size = %d x %d\n",
+            tile_width, tile_height);
     tile_width = std::max(kVaeScale,
                           std::min(width, (tile_width / kVaeScale)
                                              * kVaeScale));
@@ -424,8 +426,6 @@ bool QwenVaeEncoder::encode(const std::vector<float>& rgba, int width, int heigh
         return true;
     }
 
-    fprintf(stderr, "vae encoder tile size = %d x %d\n",
-            tile_width, tile_height);
     return encode_tiled(net_, config_, rgba, width, height,
                         tile_width, tile_height, packed);
 }
@@ -439,6 +439,8 @@ bool QwenVaeDecoder::decode(const std::vector<float>& packed, int width, int hei
         return false;
 
     choose_tile_size(width, height, config_, tile_width, tile_height, tile_width, tile_height);
+    fprintf(stderr, "vae decoder tile size = %d x %d\n",
+            tile_width, tile_height);
     tile_width = std::max(kVaeScale,
                           std::min(width, (tile_width / kVaeScale)
                                              * kVaeScale));
@@ -476,8 +478,6 @@ bool QwenVaeDecoder::decode(const std::vector<float>& packed, int width, int hei
         return true;
     }
 
-    fprintf(stderr, "vae decoder tile size = %d x %d\n",
-            tile_width, tile_height);
     return decode_tiled(net_, config_, packed, width, height,
                         tile_width, tile_height, rgba);
 }

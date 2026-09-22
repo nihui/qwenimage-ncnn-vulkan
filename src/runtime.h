@@ -38,8 +38,8 @@ struct RuntimeConfig
     bool use_bf16_storage = true;
     bool use_bf16_packed = true;
     bool use_packing_layout = true;
-    // -1 selects automatically from the Vulkan heap budget, 0 disables
-    // host-backed weights, and 1 forces low-VRAM mode.
+    // -1 selects automatically from the currently available Vulkan heap,
+    // 0 disables host-backed weights, and 1 forces low-VRAM mode.
     int low_vram = -1;
     bool use_weights_in_host_memory = false;
     bool use_local_pool_allocator = true;

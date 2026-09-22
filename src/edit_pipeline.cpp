@@ -127,13 +127,22 @@ bool QwenImageEditPipeline::load(const std::string& model_dir, RuntimeConfig con
 bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* timings)
 {
     if (!loaded_ || request.output.empty() || request.steps <= 0
-        || request.width <= 0 || request.height <= 0
+        || request.batch <= 0 || request.width <= 0 || request.height <= 0
         || request.width % 32 || request.height % 32
         || request.drop_system_tokens < 0)
         return false;
 
     configure_auto_low_vram(config_, request.width, request.height);
     models_.unload_all();
+
+    if (request.batch > 1)
+    {
+        const std::string first = make_batch_output_path(request.output, 0, request.batch);
+        const std::string second = make_batch_output_path(request.output, 1, request.batch);
+        const std::string third = make_batch_output_path(request.output, 2, request.batch);
+        fprintf(stderr, "batch generation enabled. output-path will be %s %s %s ...\n",
+                first.c_str(), second.c_str(), third.c_str());
+    }
 
     // Qwen-Image-2.1 accepts one flat set of up to ten condition images.  Keep
     // the old singular request fields as a compatibility fallback.
@@ -151,6 +160,7 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         fprintf(stderr, "negative prompt ignored because true_cfg_scale <= 1\n");
     if (do_true_cfg)
         fprintf(stderr, "true_cfg_scale = %g\n", request.guidance_scale);
+
     std::vector<std::string> vae_files = request.vae_rgba_files;
     if (vae_files.empty() && !request.vae_rgba.empty())
         vae_files.push_back(request.vae_rgba);
@@ -378,12 +388,6 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         != expected_image_slots)
         return false;
 
-    std::vector<float> target_latents((size_t)target_tokens * kLatent);
-    std::mt19937 gen(static_cast<unsigned int>(request.seed));
-    std::normal_distribution<float> dist(0.f, 1.f);
-    for (float& value : target_latents)
-        value = dist(gen);
-
     image_shapes.push_back({target_h, target_w});
     if (!models_.load_transformer(paths_, config_))
     {
@@ -391,26 +395,34 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         return false;
     }
     const std::vector<float> sigmas = QwenScheduler::make_sigmas(request.steps, target_tokens, false);
+    std::vector<std::vector<float>> batch_latents(request.batch);
     const Clock::time_point transformer_begin = Clock::now();
     bool transformer_ok = true;
+    for (int b = 0; b < request.batch && transformer_ok; b++)
     {
+        std::vector<float> target_latents((size_t)target_tokens * kLatent);
+        std::mt19937 gen(static_cast<unsigned int>(request.seed + (uint64_t)b));
+        std::normal_distribution<float> dist(0.f, 1.f);
+        for (float& value : target_latents)
+            value = dist(gen);
+
         QwenTransformer positive_transformer(models_, config_, text_tokens, target_tokens, target_h, target_w);
         QwenTransformer negative_transformer(models_, config_, negative_text_tokens, target_tokens, target_h, target_w);
-        for (int step = 0; step < request.steps; step++)
+        for (int z = 0; z < request.steps; z++)
         {
             std::vector<float> noise;
-            if (!positive_transformer.run_edit(condition_latents, target_latents, text, text_slots, image_shapes, sigmas[step], noise))
+            if (!positive_transformer.run_edit(condition_latents, target_latents, text, text_slots, image_shapes, sigmas[z], noise))
             {
-                fprintf(stderr, "edit transformer failed at step %d\n", step);
+                fprintf(stderr, "edit transformer failed at step %d of image %d\n", z, b);
                 transformer_ok = false;
                 break;
             }
             if (do_true_cfg)
             {
                 std::vector<float> negative_noise;
-                if (!negative_transformer.run_edit(condition_latents, target_latents, negative_text, negative_text_slots, image_shapes, sigmas[step], negative_noise) || negative_noise.size() != noise.size())
+                if (!negative_transformer.run_edit(condition_latents, target_latents, negative_text, negative_text_slots, image_shapes, sigmas[z], negative_noise) || negative_noise.size() != noise.size())
                 {
-                    fprintf(stderr, "edit negative transformer failed at step %d\n", step);
+                    fprintf(stderr, "edit negative transformer failed at step %d of image %d\n", z, b);
                     transformer_ok = false;
                     break;
                 }
@@ -418,10 +430,20 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
                     noise[i] = negative_noise[i] + request.guidance_scale * (noise[i] - negative_noise[i]);
             }
 
-            const float dt = sigmas[step + 1] - sigmas[step];
+            const float dt = sigmas[z + 1] - sigmas[z];
             for (size_t i = 0; i < target_latents.size(); i++)
                 target_latents[i] += dt * noise[i];
+            if (request.batch > 1)
+            {
+                fprintf(stderr, "step %d/%d of image %d/%d done\n", z + 1, request.steps, b + 1, request.batch);
+            }
+            else
+            {
+                fprintf(stderr, "step %d/%d done\n", z + 1, request.steps);
+            }
         }
+        if (transformer_ok)
+            batch_latents[b] = std::move(target_latents);
     }
     models_.unload_transformer();
     if (!transformer_ok)
@@ -433,22 +455,38 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         fprintf(stderr, "edit VAE decoder graph load failed\n");
         return false;
     }
-    std::vector<float> image;
-    const Clock::time_point vae_decode_begin = Clock::now();
-    bool vae_decode_ok = false;
+    double vae_decoder_ms = 0.0;
+    bool vae_decode_ok = true;
     {
         QwenVaeDecoder decoder(*models_.vae_decoder, config_);
-        vae_decode_ok = decoder.decode(target_latents, request.width, request.height, image);
+        for (int b = 0; b < request.batch; b++)
+        {
+            std::vector<float> image;
+            const Clock::time_point decode_begin = Clock::now();
+            if (!decoder.decode(batch_latents[b], request.width, request.height, image))
+            {
+                fprintf(stderr, "edit VAE decoder failed for image %d\n", b);
+                vae_decode_ok = false;
+                break;
+            }
+            vae_decoder_ms += elapsed_ms(decode_begin);
+            const std::string output_path = make_batch_output_path(request.output, b, request.batch);
+            if (!save_rgba_float_png(output_path, image, request.width, request.height))
+            {
+                fprintf(stderr, "failed to save output %s\n", output_path.c_str());
+                vae_decode_ok = false;
+                break;
+            }
+            if (request.batch > 1)
+                fprintf(stderr, "vae of image %d/%d done\n", b + 1, request.batch);
+            else
+                fprintf(stderr, "vae done\n");
+        }
     }
     models_.unload_vae_decoder();
     if (!vae_decode_ok)
-    {
-        fprintf(stderr, "edit VAE decoder failed\n");
         return false;
-    }
-    if (timings) timings->vae_decoder_ms = elapsed_ms(vae_decode_begin);
-    if (!save_rgba_float_png(request.output, image, request.width, request.height))
-        return false;
+    if (timings) timings->vae_decoder_ms = vae_decoder_ms;
     if (timings) timings->total_ms = elapsed_ms(vision_begin);
     return true;
 }

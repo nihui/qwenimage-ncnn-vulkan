@@ -27,8 +27,10 @@ void configure_auto_low_vram(RuntimeConfig& config, int width, int height)
         if (device < 0 || device >= ncnn::get_gpu_count())
             device = ncnn::get_default_gpu_index();
         heap_budget = ncnn::get_gpu_device(device)->get_heap_budget();
-        estimated_transformer = 13000u
-            + (uint32_t)((uint64_t)width * height / (1024 * 1024)) * 1000u;
+        const uint64_t pixels = (uint64_t)width * height;
+        const uint32_t megapixels =
+            (uint32_t)((pixels + 1024u * 1024u - 1) / (1024u * 1024u));
+        estimated_transformer = 13000u + megapixels * 1000u;
         if (config.low_vram < 0)
             low_vram = heap_budget < estimated_transformer;
     }
@@ -37,10 +39,10 @@ void configure_auto_low_vram(RuntimeConfig& config, int width, int height)
         low_vram = false;
     }
 
-    // In automatic mode this assignment is repeated for dynamic resolutions,
-    // allowing a later request to use the appropriate policy as well.
-    if (config.low_vram < 0 || low_vram)
-        config.use_weights_in_host_memory = low_vram;
+    // Keep the effective memory policy synchronized for both automatic and
+    // explicitly selected modes.  This also makes low_vram=0 really disable
+    // host-backed weights after a previous request used low-VRAM mode.
+    config.use_weights_in_host_memory = low_vram;
 
     fprintf(stderr, "low_vram = %d", low_vram ? 1 : 0);
     if (heap_budget != 0)
