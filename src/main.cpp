@@ -234,6 +234,7 @@ int main(int argc, char** argv)
         if (ncnn::create_gpu_instance() != 0)
         {
             fprintf(stderr, "failed to create Vulkan instance\n");
+            ncnn::destroy_gpu_instance();
             return 1;
         }
         if (gpu_id == gpu_id_auto)
@@ -241,6 +242,7 @@ int main(int argc, char** argv)
         if (gpu_id < 0)
         {
             fprintf(stderr, "no Vulkan GPU found; use -g -1 for CPU inference\n");
+            ncnn::destroy_gpu_instance();
             return 1;
         }
         config.vulkan_device_index = gpu_id;
@@ -262,6 +264,7 @@ int main(int argc, char** argv)
     fprintf(stderr, "batch = %d\n", request.batch);
     fprintf(stderr, "guidance-scale = %g\n", request.guidance_scale);
 
+    int ret = 0;
     if (image_edit)
     {
         EditRequest edit_request;
@@ -269,45 +272,58 @@ int main(int argc, char** argv)
         if (!prepare_native_edit_request(model_dir, image_paths, request.prompt, request.negative_prompt, request.guidance_scale > 1.f && request.has_negative_prompt, condition_resolution, width, height, request.steps, request.seed, request.output, edit_request, &error))
         {
             fprintf(stderr, "image preparation failed: %s\n", error.c_str());
-            return 1;
+            ret = 1;
         }
-        edit_request.guidance_scale = request.guidance_scale;
-        edit_request.batch = request.batch;
+        else
+        {
+            edit_request.guidance_scale = request.guidance_scale;
+            edit_request.batch = request.batch;
 
-        QwenImageEditPipeline pipeline;
+            QwenImageEditPipeline pipeline;
+            EditTimings timings;
+            if (!pipeline.load(model_dir, config, &error))
+            {
+                fprintf(stderr, "load failed: %s\n", error.c_str());
+                ret = 1;
+            }
+            else if (!pipeline.generate(edit_request, &timings))
+            {
+                fprintf(stderr, "image editing failed\n");
+                ret = 1;
+            }
+            else
+            {
+                print_edit_timings(edit_request, timings);
+            }
+        }
+    }
+    else
+    {
+        QwenImagePipeline pipeline;
+        std::string error;
+        GenerateTimings timings;
         if (!pipeline.load(model_dir, config, &error))
         {
             fprintf(stderr, "load failed: %s\n", error.c_str());
-            return 1;
+            ret = 1;
         }
-        EditTimings timings;
-        if (!pipeline.generate(edit_request, &timings))
+        else if (!pipeline.generate(request, &timings))
         {
-            fprintf(stderr, "image editing failed\n");
-            return 1;
+            fprintf(stderr, "text-to-image generation failed\n");
+            ret = 1;
         }
-        print_edit_timings(edit_request, timings);
-        return 0;
+        else
+        {
+            fprintf(stdout, "text encoder: %g ms\n", timings.text_encoder_ms);
+            fprintf(stdout, "transformer: %g ms\n", timings.transformer_ms);
+            fprintf(stdout, "vae decoder: %g ms\n", timings.vae_decoder_ms);
+            fprintf(stdout, "total: %g ms\n", timings.total_ms);
+            print_saved_paths(request.output, request.batch);
+        }
     }
 
-    QwenImagePipeline pipeline;
-    std::string error;
-    if (!pipeline.load(model_dir, config, &error))
-    {
-        fprintf(stderr, "load failed: %s\n", error.c_str());
-        return 1;
-    }
+    if (use_vulkan)
+        ncnn::destroy_gpu_instance();
 
-    GenerateTimings timings;
-    if (!pipeline.generate(request, &timings))
-    {
-        fprintf(stderr, "text-to-image generation failed\n");
-        return 1;
-    }
-    fprintf(stdout, "text encoder: %g ms\n", timings.text_encoder_ms);
-    fprintf(stdout, "transformer: %g ms\n", timings.transformer_ms);
-    fprintf(stdout, "vae decoder: %g ms\n", timings.vae_decoder_ms);
-    fprintf(stdout, "total: %g ms\n", timings.total_ms);
-    print_saved_paths(request.output, request.batch);
-    return 0;
+    return ret;
 }
