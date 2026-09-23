@@ -2,15 +2,22 @@
 
 #include "vae.h"
 
+#if NCNN_VULKAN
+#include "gpu.h"
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
+#include <memory>
+#include <string>
 
 namespace qwenimage {
 namespace {
 constexpr int kChannels = 64;
 constexpr int kVaeScale = 16;
-constexpr int kTilePadLatent = 16;
+constexpr int kTilePadLatent = 4;
 
 const float kMean[kChannels] = {
     0.5126f, 0.7721f, -0.0631f, 1.3506f, -0.7855f, -2.1025f, -0.3458f, 1.3722f,
@@ -107,48 +114,83 @@ bool crop_mat(const ncnn::Mat& source, int top, int bottom, int left, int right,
     return true;
 }
 
-bool extract_blob(const ncnn::Net& net, const RuntimeConfig& config, ModelStage stage, const ncnn::Mat& input, const char* extra_name, const ncnn::Mat* extra, const char* output_name, ncnn::Mat& output)
+#if NCNN_VULKAN
+uint64_t get_available_vae_memory(const ncnn::Net& net)
 {
-    ncnn::Extractor extractor = net.create_extractor();
-    if (extractor.input("in0", input) != 0)
-        return false;
-    if (extra_name != nullptr && extra != nullptr
-        && extractor.input(extra_name, *extra) != 0)
-        return false;
+    const ncnn::VulkanDevice* vkdev = net.vulkan_device();
+    const uint64_t budget = (uint64_t)vkdev->get_heap_budget() * 1024 * 1024;
+    // measured bf16 decoder device weights use about 494 mib, rounded up to 512 mib
+    // conservatively include host weights on non-discrete devices
+    const uint64_t weights = !net.opt.use_weights_in_host_memory || vkdev->info.type() != 0 ? 512ull * 1024 * 1024 : 0;
+    return budget > weights ? budget - weights : 0;
+}
+#endif
 
+class VaeWorkspace
+{
+public:
+    explicit VaeWorkspace(const ncnn::Net& net) : width(0), height(0)
+    {
+#if NCNN_VULKAN
+        if (net.opt.use_vulkan_compute)
+        {
+            blob.reset(new ncnn::VkBlobAllocator(net.vulkan_device()));
+            staging.reset(new ncnn::VkStagingAllocator(net.vulkan_device()));
+        }
+#endif
+    }
+
+    void prepare(int w, int h, const char* output)
+    {
+        if (width != w || height != h || output_name != output)
+            clear();
+        width = w;
+        height = h;
+        output_name = output;
+    }
+
+    void clear()
+    {
+#if NCNN_VULKAN
+        if (blob)
+        {
+            blob->clear();
+            staging->clear();
+        }
+#endif
+        width = 0;
+        height = 0;
+        output_name.clear();
+    }
+
+    int width;
+    int height;
+    std::string output_name;
+#if NCNN_VULKAN
+    std::unique_ptr<ncnn::VkBlobAllocator> blob;
+    std::unique_ptr<ncnn::VkStagingAllocator> staging;
+#endif
+};
+
+bool extract_blob(const ncnn::Net& net, const RuntimeConfig& config, ModelStage stage, const ncnn::Mat& input, const char* extra_name, const ncnn::Mat* extra, const char* output_name, VaeWorkspace& workspace, ncnn::Mat& output)
+{
+    workspace.prepare(input.w, input.h, output_name);
+    ncnn::Extractor extractor = net.create_extractor();
+#if NCNN_VULKAN
+    if (workspace.blob)
+    {
+        extractor.set_blob_vkallocator(workspace.blob.get());
+        extractor.set_workspace_vkallocator(workspace.blob.get());
+        extractor.set_staging_vkallocator(workspace.staging.get());
+    }
+#endif
+    if (extractor.input("in0", input) != 0 || (extra && extractor.input(extra_name, *extra) != 0))
+        return false;
     ncnn::Mat raw;
     if (extractor.extract(output_name, raw) != 0)
         return false;
     output = clone_output(raw, config, stage);
     return !output.empty();
-}
-
-void choose_tile_size(int width, int height, const RuntimeConfig& config, int requested_width, int requested_height, int& tile_width, int& tile_height)
-{
-    if (requested_width > 0 && requested_height > 0)
-    {
-        tile_width = std::min(width, requested_width);
-        tile_height = std::min(height, requested_height);
-    }
-    else
-    {
-        get_optimal_vae_tile_size(width, height, config,
-                                  tile_width, tile_height);
-    }
-}
-
-void normalize_latent(const ncnn::Mat& latent, int width, int height, std::vector<float>& packed)
-{
-    const float* source = static_cast<const float*>(latent.data);
-    const int latent_width = width / kVaeScale;
-    const int latent_height = height / kVaeScale;
-    packed.resize((size_t)latent_width * latent_height * kChannels);
-    for (int y = 0; y < latent_height; y++)
-        for (int x = 0; x < latent_width; x++)
-            for (int c = 0; c < kChannels; c++)
-                packed[((size_t)y * latent_width + x) * kChannels + c] =
-                    (source[((size_t)c * latent_height + y)
-                            * latent_width + x] - kMean[c]) / kStd[c];
 }
 
 bool paste_encoder_tile(const ncnn::Mat& encoder_out, int crop_top, int crop_bottom, int crop_left, int crop_right, int output_x, int output_y, int output_width, int output_height, std::vector<float>& packed)
@@ -210,275 +252,214 @@ bool paste_decoder_tile(const ncnn::Mat& decoder_out, int crop_top, int crop_bot
     return true;
 }
 
-bool encode_tiled(const ncnn::Net& net, const RuntimeConfig& config, const std::vector<float>& rgba, int width, int height, int tile_width, int tile_height, std::vector<float>& packed)
+struct VaeTile
 {
-    const int latent_width = width / kVaeScale;
-    const int latent_height = height / kVaeScale;
-    const int latent_tile_width = tile_width / kVaeScale;
-    const int latent_tile_height = tile_height / kVaeScale;
-    if (latent_tile_width <= 0 || latent_tile_height <= 0)
-        return false;
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+    int left;
+    int top;
+    int right;
+    int bottom;
+};
 
-    ncnn::Mat image = make_image_mat(width, height, 4, rgba);
-
-    // Blob 296 is the encoder's post-attention bottleneck residual. Extract
-    // it at the original resolution once, then run only the local tail of
-    // the graph for each tile.
-    ncnn::Mat attn;
-    if (!extract_blob(net, config, ModelStage::VaeEncoder, image,
-                      nullptr, nullptr, "296", attn))
-        return false;
-    if (attn.dims != 3 || attn.w != latent_width
-        || attn.h != latent_height || attn.c != 768)
-        return false;
-
-    packed.assign((size_t)latent_width * latent_height * kChannels, 0.f);
-    const int image_pad = kTilePadLatent * kVaeScale;
-    const int tiles_w = (width + tile_width - 1) / tile_width;
-    const int tiles_h = (height + tile_height - 1) / tile_height;
-
-    for (int ty = 0; ty < tiles_h; ty++)
-        for (int tx = 0; tx < tiles_w; tx++)
+std::vector<VaeTile> make_tiles(int width, int height, int tile_width, int tile_height)
+{
+    std::vector<VaeTile> tiles;
+    for (int y = 0; y < height; y += tile_height)
+        for (int x = 0; x < width; x += tile_width)
         {
-            const int target_start_x = tx * tile_width;
-            const int target_start_y = ty * tile_height;
-            const int target_end_x = std::min(width,
-                                              (tx + 1) * tile_width);
-            const int target_end_y = std::min(height,
-                                              (ty + 1) * tile_height);
-            const int image_start_x = std::max(0,
-                                                target_start_x - image_pad);
-            const int image_start_y = std::max(0,
-                                                target_start_y - image_pad);
-            const int image_end_x = std::min(width,
-                                              target_end_x + image_pad);
-            const int image_end_y = std::min(height,
-                                              target_end_y + image_pad);
-            const int latent_start_x = image_start_x / kVaeScale;
-            const int latent_start_y = image_start_y / kVaeScale;
-            const int latent_end_x = image_end_x / kVaeScale;
-            const int latent_end_y = image_end_y / kVaeScale;
-
-            ncnn::Mat image_tile;
-            ncnn::Mat attn_tile;
-            if (!crop_mat(image, image_start_y, height - image_end_y,
-                          image_start_x, width - image_end_x, image_tile)
-                || !crop_mat(attn, latent_start_y,
-                             latent_height - latent_end_y,
-                             latent_start_x, latent_width - latent_end_x,
-                             attn_tile))
-                return false;
-
-            ncnn::Mat encoder_out;
-            if (!extract_blob(net, config, ModelStage::VaeEncoder,
-                              image_tile, "296", &attn_tile, "out0",
-                              encoder_out))
-                return false;
-
-            const int actual_crop_top =
-                (target_start_y - image_start_y) / kVaeScale;
-            const int actual_crop_bottom =
-                (image_end_y - target_end_y) / kVaeScale;
-            const int actual_crop_left =
-                (target_start_x - image_start_x) / kVaeScale;
-            const int actual_crop_right =
-                (image_end_x - target_end_x) / kVaeScale;
-            if (!paste_encoder_tile(
-                    encoder_out, actual_crop_top, actual_crop_bottom,
-                    actual_crop_left, actual_crop_right,
-                    target_start_x / kVaeScale,
-                    target_start_y / kVaeScale,
-                    latent_width, latent_height, packed))
-                return false;
+            VaeTile tile;
+            tile.x0 = x;
+            tile.y0 = y;
+            tile.x1 = std::min(width, x + tile_width);
+            tile.y1 = std::min(height, y + tile_height);
+            tile.left = std::max(0, tile.x0 - kTilePadLatent);
+            tile.top = std::max(0, tile.y0 - kTilePadLatent);
+            tile.right = std::min(width, tile.x1 + kTilePadLatent);
+            tile.bottom = std::min(height, tile.y1 + kTilePadLatent);
+            tiles.push_back(tile);
         }
-    return true;
+    // group equal crop shapes so their workspace can be reused
+    std::stable_sort(tiles.begin(), tiles.end(), [](const VaeTile& a, const VaeTile& b) {
+        const int aw = a.right - a.left;
+        const int ah = a.bottom - a.top;
+        const int bw = b.right - b.left;
+        const int bh = b.bottom - b.top;
+        if ((int64_t)aw * ah != (int64_t)bw * bh)
+            return (int64_t)aw * ah > (int64_t)bw * bh;
+        return aw != bw ? aw > bw : ah > bh;
+    });
+    return tiles;
 }
 
-bool decode_tiled(const ncnn::Net& net, const RuntimeConfig& config, const std::vector<float>& packed, int width, int height, int tile_width, int tile_height, std::vector<float>& rgba)
+struct TileAxis
 {
+    int size;
+    int count;
+    int largest;
+    int total;
+};
+
+std::vector<TileAxis> tile_axis_candidates(int length)
+{
+    std::vector<TileAxis> candidates;
+    for (int count = 1; count <= length; count++)
+    {
+        const int size = (length + count - 1) / count;
+        if (!candidates.empty() && candidates.back().size == size)
+            continue;
+        TileAxis axis = {size, (length + size - 1) / size, 0, 0};
+        for (int start = 0; start < length; start += size)
+        {
+            const int crop = std::min(length, start + size + kTilePadLatent) - std::max(0, start - kTilePadLatent);
+            axis.largest = std::max(axis.largest, crop);
+            axis.total += crop;
+        }
+        candidates.push_back(axis);
+    }
+    return candidates;
+}
+
+bool process_vae(const ncnn::Net& net, const RuntimeConfig& config, ModelStage stage, const ncnn::Mat& input, int width, int height, int requested_width, int requested_height, std::vector<float>& output)
+{
+    const bool encoder = stage == ModelStage::VaeEncoder;
+    const char* name = encoder ? "encoder" : "decoder";
+    const char* bottleneck = encoder ? "296" : "45";
     const int latent_width = width / kVaeScale;
     const int latent_height = height / kVaeScale;
-    const int latent_tile_width = tile_width / kVaeScale;
-    const int latent_tile_height = tile_height / kVaeScale;
-    if (latent_tile_width <= 0 || latent_tile_height <= 0)
-        return false;
-
-    std::vector<float> latent_data((size_t)kChannels
-                                   * latent_height * latent_width);
-    for (int y = 0; y < latent_height; y++)
-        for (int x = 0; x < latent_width; x++)
-            for (int c = 0; c < kChannels; c++)
-                latent_data[((size_t)c * latent_height + y)
-                            * latent_width + x] =
-                    packed[((size_t)y * latent_width + x) * kChannels + c]
-                    * kStd[c] + kMean[c];
-
-    ncnn::Mat latent = make_channel_mat(latent_width, latent_height,
-                                        kChannels, latent_data);
-
-    // Blob 45 is the decoder's post-attention bottleneck residual. Keep its
-    // original spatial resolution and execute only the local reconstruction
-    // tail for each tile.
+    const bool automatic = requested_width <= 0 || requested_height <= 0;
+    VaeWorkspace workspace(net);
+    if (!net.opt.use_vulkan_compute && (automatic || (requested_width >= width && requested_height >= height)))
+    {
+        ncnn::Mat result;
+        if (!extract_blob(net, config, stage, input, nullptr, nullptr, "out0", workspace, result) || result.w != (encoder ? latent_width : width) || result.h != (encoder ? latent_height : height))
+            return false;
+        output.resize(encoder ? (size_t)latent_width * latent_height * kChannels : (size_t)4 * width * height);
+        fprintf(stderr, "vae %s tile size = %d x %d\n", name, width, height);
+        if (encoder)
+            return paste_encoder_tile(result, 0, 0, 0, 0, 0, 0, latent_width, latent_height, output);
+        return paste_decoder_tile(result, 0, 0, 0, 0, 0, 0, width, height, output);
+    }
+    // preserve global attention at the original resolution for every tile
     ncnn::Mat attn;
-    if (!extract_blob(net, config, ModelStage::VaeDecoder, latent,
-                      nullptr, nullptr, "45", attn))
+    if (!extract_blob(net, config, stage, input, nullptr, nullptr, bottleneck, workspace, attn))
+    {
+        fprintf(stderr, "vae %s full-resolution bottleneck failed\n", name);
         return false;
-    if (attn.dims != 3 || attn.w != latent_width
-        || attn.h != latent_height || attn.c != 1152)
+    }
+    if (attn.dims != 3 || attn.w != latent_width || attn.h != latent_height || attn.c != (encoder ? 768 : 1152))
         return false;
+    workspace.clear();
 
-    rgba.assign((size_t)4 * width * height, 0.f);
-    const int tiles_w = (latent_width + latent_tile_width - 1)
-                        / latent_tile_width;
-    const int tiles_h = (latent_height + latent_tile_height - 1)
-                        / latent_tile_height;
-
-    for (int ty = 0; ty < tiles_h; ty++)
-        for (int tx = 0; tx < tiles_w; tx++)
+    int tile_width = automatic ? width : std::max(kVaeScale, std::min(width, requested_width / kVaeScale * kVaeScale));
+    int tile_height = automatic ? height : std::max(kVaeScale, std::min(height, requested_height / kVaeScale * kVaeScale));
+#if NCNN_VULKAN
+    if (automatic && !encoder && workspace.blob)
+    {
+        const uint64_t available_memory = get_available_vae_memory(net);
+        if (!get_optimal_vae_tile_size(width, height, available_memory, tile_width, tile_height))
         {
-            const int target_start_x = tx * latent_tile_width;
-            const int target_start_y = ty * latent_tile_height;
-            const int target_end_x = std::min(latent_width,
-                                              (tx + 1) * latent_tile_width);
-            const int target_end_y = std::min(latent_height,
-                                              (ty + 1) * latent_tile_height);
-            const int latent_start_x = std::max(
-                0, target_start_x - kTilePadLatent);
-            const int latent_start_y = std::max(
-                0, target_start_y - kTilePadLatent);
-            const int latent_end_x = std::min(
-                latent_width, target_end_x + kTilePadLatent);
-            const int latent_end_y = std::min(
-                latent_height, target_end_y + kTilePadLatent);
-
-            ncnn::Mat latent_tile;
-            ncnn::Mat attn_tile;
-            if (!crop_mat(latent, latent_start_y,
-                          latent_height - latent_end_y,
-                          latent_start_x, latent_width - latent_end_x,
-                          latent_tile)
-                || !crop_mat(attn, latent_start_y,
-                             latent_height - latent_end_y,
-                             latent_start_x, latent_width - latent_end_x,
-                             attn_tile))
-                return false;
-
-            ncnn::Mat decoder_out;
-            if (!extract_blob(net, config, ModelStage::VaeDecoder,
-                              latent_tile, "45", &attn_tile, "out0",
-                              decoder_out))
-                return false;
-
-            const int actual_crop_top = target_start_y - latent_start_y;
-            const int actual_crop_bottom = latent_end_y - target_end_y;
-            const int actual_crop_left = target_start_x - latent_start_x;
-            const int actual_crop_right = latent_end_x - target_end_x;
-            if (!paste_decoder_tile(
-                    decoder_out, actual_crop_top * kVaeScale,
-                    actual_crop_bottom * kVaeScale,
-                    actual_crop_left * kVaeScale,
-                    actual_crop_right * kVaeScale,
-                    target_start_x * kVaeScale,
-                    target_start_y * kVaeScale,
-                    width, height, rgba))
+            fprintf(stderr, "vae decoder tile cannot fit available gpu memory\n");
+            return false;
+        }
+    }
+#endif
+    output.resize(encoder ? (size_t)latent_width * latent_height * kChannels : (size_t)4 * width * height);
+    fprintf(stderr, "vae %s tile size = %d x %d\n", name, tile_width, tile_height);
+    const std::vector<VaeTile> tiles = make_tiles(latent_width, latent_height, tile_width / kVaeScale, tile_height / kVaeScale);
+    for (size_t i = 0; i < tiles.size(); i++)
+    {
+        const VaeTile& tile = tiles[i];
+        const int scale = encoder ? kVaeScale : 1;
+        ncnn::Mat input_tile;
+        ncnn::Mat attn_tile;
+        if (!crop_mat(input, tile.top * scale, input.h - tile.bottom * scale, tile.left * scale, input.w - tile.right * scale, input_tile) || !crop_mat(attn, tile.top, latent_height - tile.bottom, tile.left, latent_width - tile.right, attn_tile))
+            return false;
+        ncnn::Mat result;
+        if (!extract_blob(net, config, stage, input_tile, bottleneck, &attn_tile, "out0", workspace, result))
+            return false;
+        const int output_scale = encoder ? 1 : kVaeScale;
+        if (result.w != (tile.right - tile.left) * output_scale || result.h != (tile.bottom - tile.top) * output_scale)
+            return false;
+        const int top = tile.y0 - tile.top;
+        const int bottom = tile.bottom - tile.y1;
+        const int left = tile.x0 - tile.left;
+        const int right = tile.right - tile.x1;
+        if (encoder)
+        {
+            if (!paste_encoder_tile(result, top, bottom, left, right, tile.x0, tile.y0, latent_width, latent_height, output))
                 return false;
         }
+        else
+        {
+            if (!paste_decoder_tile(result, top * kVaeScale, bottom * kVaeScale, left * kVaeScale, right * kVaeScale, tile.x0 * kVaeScale, tile.y0 * kVaeScale, width, height, output))
+                return false;
+        }
+    }
     return true;
 }
+}
+
+bool get_optimal_vae_tile_size(int width, int height, uint64_t available_memory, int& tile_width, int& tile_height)
+{
+    tile_width = tile_height = 0;
+    if (width <= 0 || height <= 0 || width % kVaeScale || height % kVaeScale)
+        return false;
+    // measured full-pipeline overhead outside the tile workspace is about 130 mib
+    // round up to 160 mib for runtime resources and driver variation
+    const uint64_t reserve = 160 * 1024 * 1024;
+    if (available_memory <= reserve)
+        return false;
+    const uint64_t budget = available_memory - reserve;
+    const std::vector<TileAxis> xs = tile_axis_candidates(width / kVaeScale);
+    const std::vector<TileAxis> ys = tile_axis_candidates(height / kVaeScale);
+    uint64_t best_count = UINT64_MAX;
+    uint64_t best_area = UINT64_MAX;
+    uint64_t best_memory = UINT64_MAX;
+    for (const TileAxis& x : xs)
+        for (const TileAxis& y : ys)
+        {
+            // measured bf16 decoder workspace envelope on rtx 3060 and rx 9060 xt
+            // count actual cropped pixels, including clipped four-latent-pixel halos
+            const uint64_t pixels = (uint64_t)x.largest * y.largest * kVaeScale * kVaeScale;
+            const uint64_t memory = pixels * 4352 + 32 * 1024 * 1024;
+            if (memory > budget)
+                continue;
+            const uint64_t count = (uint64_t)x.count * y.count;
+            const uint64_t area = (uint64_t)x.total * y.total;
+            if (count > best_count || (count == best_count && area > best_area) || (count == best_count && area == best_area && memory >= best_memory))
+                continue;
+            best_count = count;
+            best_area = area;
+            best_memory = memory;
+            tile_width = x.size * kVaeScale;
+            tile_height = y.size * kVaeScale;
+        }
+    return best_count != UINT64_MAX;
 }
 
 bool QwenVaeEncoder::encode(const std::vector<float>& rgba, int width, int height, std::vector<float>& packed, int tile_width, int tile_height) const
 {
-    if (width <= 0 || height <= 0 || width % kVaeScale
-        || height % kVaeScale
-        || rgba.size() != (size_t)4 * width * height)
+    if (width <= 0 || height <= 0 || width % kVaeScale || height % kVaeScale || rgba.size() != (size_t)4 * width * height)
         return false;
-
-    choose_tile_size(width, height, config_, tile_width, tile_height, tile_width, tile_height);
-    fprintf(stderr, "vae encoder tile size = %d x %d\n",
-            tile_width, tile_height);
-    tile_width = std::max(kVaeScale,
-                          std::min(width, (tile_width / kVaeScale)
-                                             * kVaeScale));
-    tile_height = std::max(kVaeScale,
-                           std::min(height, (tile_height / kVaeScale)
-                                                * kVaeScale));
-    if (tile_width >= width && tile_height >= height)
-    {
-        ncnn::Extractor extractor = net_.create_extractor();
-        ncnn::Mat input = make_image_mat(width, height, 4, rgba);
-        ncnn::Mat raw;
-        if (extractor.input("in0", input) != 0
-            || extractor.extract("out0", raw) != 0)
-            return false;
-        ncnn::Mat latent = clone_output(raw, config_,
-                                        ModelStage::VaeEncoder);
-        const int latent_width = width / kVaeScale;
-        const int latent_height = height / kVaeScale;
-        if (latent.empty()
-            || (latent.dims != 3
-                && (latent.dims != 4 || latent.d != 1))
-            || latent.elempack != 1
-            || latent.w != latent_width || latent.h != latent_height
-            || latent.c != kChannels)
-            return false;
-        normalize_latent(latent, width, height, packed);
-        return true;
-    }
-
-    return encode_tiled(net_, config_, rgba, width, height,
-                        tile_width, tile_height, packed);
+    ncnn::Mat input = make_image_mat(width, height, 4, rgba);
+    return process_vae(net_, config_, ModelStage::VaeEncoder, input, width, height, tile_width, tile_height, packed);
 }
 
 bool QwenVaeDecoder::decode(const std::vector<float>& packed, int width, int height, std::vector<float>& rgba, int tile_width, int tile_height) const
 {
-    if (width <= 0 || height <= 0 || width % kVaeScale
-        || height % kVaeScale
-        || packed.size() != (size_t)(width / kVaeScale)
-                                  * (height / kVaeScale) * kChannels)
+    if (width <= 0 || height <= 0 || width % kVaeScale || height % kVaeScale || packed.size() != (size_t)(width / kVaeScale) * (height / kVaeScale) * kChannels)
         return false;
-
-    choose_tile_size(width, height, config_, tile_width, tile_height, tile_width, tile_height);
-    fprintf(stderr, "vae decoder tile size = %d x %d\n",
-            tile_width, tile_height);
-    tile_width = std::max(kVaeScale,
-                          std::min(width, (tile_width / kVaeScale)
-                                             * kVaeScale));
-    tile_height = std::max(kVaeScale,
-                           std::min(height, (tile_height / kVaeScale)
-                                                * kVaeScale));
-    if (tile_width >= width && tile_height >= height)
-    {
-        const int latent_width = width / kVaeScale;
-        const int latent_height = height / kVaeScale;
-        std::vector<float> latent_data((size_t)kChannels
-                                       * latent_height * latent_width);
-        for (int y = 0; y < latent_height; y++)
-            for (int x = 0; x < latent_width; x++)
-                for (int c = 0; c < kChannels; c++)
-                    latent_data[((size_t)c * latent_height + y)
-                                * latent_width + x] =
-                        packed[((size_t)y * latent_width + x) * kChannels + c]
-                        * kStd[c] + kMean[c];
-        ncnn::Extractor extractor = net_.create_extractor();
-        ncnn::Mat input = make_channel_mat(latent_width, latent_height,
-                                           kChannels, latent_data);
-        ncnn::Mat raw;
-        if (extractor.input("in0", input) != 0
-            || extractor.extract("out0", raw) != 0)
-            return false;
-        ncnn::Mat image = clone_output(raw, config_,
-                                       ModelStage::VaeDecoder);
-        if (image.empty() || image.dims != 3 || image.w != width
-            || image.h != height || image.c != 4
-            || image.elempack != 1)
-            return false;
-        const float* source = static_cast<const float*>(image.data);
-        rgba.assign(source, source + (size_t)4 * width * height);
-        return true;
-    }
-
-    return decode_tiled(net_, config_, packed, width, height,
-                        tile_width, tile_height, rgba);
+    const int latent_width = width / kVaeScale;
+    const int latent_height = height / kVaeScale;
+    std::vector<float> latent_data((size_t)kChannels * latent_height * latent_width);
+    for (int y = 0; y < latent_height; y++)
+        for (int x = 0; x < latent_width; x++)
+            for (int c = 0; c < kChannels; c++)
+                latent_data[((size_t)c * latent_height + y) * latent_width + x] = packed[((size_t)y * latent_width + x) * kChannels + c] * kStd[c] + kMean[c];
+    ncnn::Mat input = make_channel_mat(latent_width, latent_height, kChannels, latent_data);
+    return process_vae(net_, config_, ModelStage::VaeDecoder, input, width, height, tile_width, tile_height, rgba);
 }
 }

@@ -1,10 +1,15 @@
 // qwen-image implemented with ncnn library
 
 #pragma once
+#include <cstdint>
 #include <vector>
 #include "models.h"
 
 namespace qwenimage {
+
+// decoder tile size in pixels, available memory in bytes
+bool get_optimal_vae_tile_size(int width, int height, uint64_t available_memory, int& tile_width, int& tile_height);
+
 class QwenVaeEncoder
 {
 public:

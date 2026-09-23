@@ -28,6 +28,8 @@ bool validate_edit_model_paths(const ModelPaths& paths, std::string* error = nul
 
 struct QwenModelSet
 {
+    ~QwenModelSet();
+
     // Keep only the currently active pipeline stage resident.  A Qwen
     // generation uses tens of gigabytes of weights, so keeping every graph
     // alive for the whole request defeats ncnn's allocator reclamation.
@@ -51,5 +53,15 @@ struct QwenModelSet
     void unload_vae_decoder();
     void unload_transformer();
     void unload_all();
+
+#if NCNN_VULKAN
+private:
+    std::unique_ptr<ncnn::VkBlobAllocator> text_encoder_blob_vkallocator;
+    std::unique_ptr<ncnn::VkStagingAllocator> text_encoder_staging_vkallocator;
+    std::unique_ptr<ncnn::VkBlobAllocator> vision_encoder_blob_vkallocator;
+    std::unique_ptr<ncnn::VkStagingAllocator> vision_encoder_staging_vkallocator;
+    std::unique_ptr<ncnn::VkBlobAllocator> transformer_blob_vkallocator;
+    std::unique_ptr<ncnn::VkStagingAllocator> transformer_staging_vkallocator;
+#endif
 };
 }

@@ -62,10 +62,6 @@ RuntimeConfig normalize_runtime_config(RuntimeConfig config = {});
 // same ncnn memory policy.
 void configure_auto_low_vram(RuntimeConfig& config, int width, int height);
 
-// Select an output tile size from the Vulkan heap budget.  A full-image tile
-// is returned when the VAE activation footprint fits the available heap.
-void get_optimal_vae_tile_size(int width, int height, const RuntimeConfig& config, int& tile_width, int& tile_height);
-
 ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage);
 
 bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& config, ModelStage stage);

@@ -23,6 +23,21 @@ bool valid_file_pair(const ModelFiles& files)
 {
     return exists(files.param) && exists(files.bin);
 }
+#if NCNN_VULKAN
+void set_stage_vkallocators(ncnn::Net& net, std::unique_ptr<ncnn::VkBlobAllocator>& blob_vkallocator, std::unique_ptr<ncnn::VkStagingAllocator>& staging_vkallocator)
+{
+    if (!net.opt.use_vulkan_compute)
+        return;
+
+    if (!blob_vkallocator)
+        blob_vkallocator.reset(new ncnn::VkBlobAllocator(net.vulkan_device()));
+    if (!staging_vkallocator)
+        staging_vkallocator.reset(new ncnn::VkStagingAllocator(net.vulkan_device()));
+    net.opt.blob_vkallocator = blob_vkallocator.get();
+    net.opt.workspace_vkallocator = blob_vkallocator.get();
+    net.opt.staging_vkallocator = staging_vkallocator.get();
+}
+#endif
 }
 ModelPaths make_model_paths(const std::string& model_dir)
 {
@@ -100,6 +115,11 @@ bool validate_edit_model_paths(const ModelPaths& paths, std::string* error)
     return validate_model_paths(paths, error);
 }
 
+QwenModelSet::~QwenModelSet()
+{
+    unload_all();
+}
+
 bool QwenModelSet::load_text_encoder(const ModelPaths& paths, const RuntimeConfig& config, bool edit_mode)
 {
     unload_text_encoder();
@@ -112,6 +132,9 @@ bool QwenModelSet::load_text_encoder(const ModelPaths& paths, const RuntimeConfi
         unload_text_encoder();
         return false;
     }
+#if NCNN_VULKAN
+    set_stage_vkallocators(*text_encoder, text_encoder_blob_vkallocator, text_encoder_staging_vkallocator);
+#endif
     return true;
 }
 
@@ -125,6 +148,9 @@ bool QwenModelSet::load_vision_encoder(const ModelPaths& paths, const RuntimeCon
         unload_vision_encoder();
         return false;
     }
+#if NCNN_VULKAN
+    set_stage_vkallocators(*vision_encoder, vision_encoder_blob_vkallocator, vision_encoder_staging_vkallocator);
+#endif
     return true;
 }
 
@@ -196,17 +222,32 @@ bool QwenModelSet::load_transformer(const ModelPaths& paths, const RuntimeConfig
         unload_transformer();
         return false;
     }
+#if NCNN_VULKAN
+    // share one inference pool across all transformer graphs
+    set_stage_vkallocators(*transformer_input, transformer_blob_vkallocator, transformer_staging_vkallocator);
+    for (const auto& net : transformer_blocks)
+        set_stage_vkallocators(*net, transformer_blob_vkallocator, transformer_staging_vkallocator);
+    set_stage_vkallocators(*transformer_output, transformer_blob_vkallocator, transformer_staging_vkallocator);
+#endif
     return true;
 }
 
 void QwenModelSet::unload_text_encoder()
 {
     text_encoder.reset();
+#if NCNN_VULKAN
+    text_encoder_blob_vkallocator.reset();
+    text_encoder_staging_vkallocator.reset();
+#endif
 }
 
 void QwenModelSet::unload_vision_encoder()
 {
     vision_encoder.reset();
+#if NCNN_VULKAN
+    vision_encoder_blob_vkallocator.reset();
+    vision_encoder_staging_vkallocator.reset();
+#endif
 }
 
 void QwenModelSet::unload_vae_encoder()
@@ -226,6 +267,10 @@ void QwenModelSet::unload_transformer()
     transformer_blocks.clear();
     transformer_input.reset();
     transformer_output.reset();
+#if NCNN_VULKAN
+    transformer_blob_vkallocator.reset();
+    transformer_staging_vkallocator.reset();
+#endif
 }
 
 void QwenModelSet::unload_all()

@@ -81,6 +81,8 @@ https://github.com/QwenLM/Qwen-Image-2.1
 
 - Recommended: 32GB RAM, 16GB dedicated GPU with tensorcore/matrix hardware
 
+- VAE decoder tiling adapts automatically to the available GPU memory
+
 - CPU inference is available with `-g -1`
 
 ### Example Command
