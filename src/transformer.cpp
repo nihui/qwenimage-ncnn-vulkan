@@ -290,7 +290,7 @@ bool QwenTransformer::run_input(const ncnn::Mat& latents, const ncnn::Mat& text,
 
 bool QwenTransformer::run_blocks(ncnn::Mat hidden, const ncnn::Mat& modulation, const ncnn::Mat& temb, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, ncnn::Mat& noise) const
 {
-    if (!models_.transformer_output)
+    if (!models_.transformer_blocks || !models_.transformer_output)
         return false;
 #if NCNN_VULKAN
     if (config_.use_vulkan_compute)
@@ -305,16 +305,13 @@ bool QwenTransformer::run_blocks(ncnn::Mat hidden, const ncnn::Mat& modulation, 
     }
 #endif
     const int sequence = hidden.h * hidden.elempack;
-    for (const auto& net : models_.transformer_blocks)
     {
-        ncnn::Extractor block = net->create_extractor();
+        ncnn::Extractor block = models_.transformer_blocks->create_extractor();
         if (block.input("in0", hidden) != 0 || block.input("in1", modulation) != 0 || block.input("in2", cos) != 0 || block.input("in3", sin) != 0 || block.input("in4", mask) != 0)
             return false;
         if (block.extract("out0", hidden, 1) != 0 || !valid_hidden(hidden, sequence))
             return false;
     }
-    if (!models_.transformer_output)
-        return false;
     ncnn::Extractor output = models_.transformer_output->create_extractor();
     if (output.input("in0", hidden) != 0 || output.input("in1", temb) != 0)
         return false;
@@ -353,11 +350,12 @@ bool QwenTransformer::run_input_vulkan(const ncnn::Mat& latents, const ncnn::Mat
 
 bool QwenTransformer::run_blocks_vulkan(ncnn::VkMat hidden, const ncnn::Mat& modulation, const ncnn::Mat& temb, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, ncnn::Mat& noise) const
 {
+    if (!models_.transformer_blocks || !models_.transformer_output)
+        return false;
     const int sequence = hidden.h * hidden.elempack;
-    for (const auto& net : models_.transformer_blocks)
     {
-        ncnn::Extractor block = net->create_extractor();
-        ncnn::VkCompute cmd(net->vulkan_device());
+        ncnn::Extractor block = models_.transformer_blocks->create_extractor();
+        ncnn::VkCompute cmd(models_.transformer_blocks->vulkan_device());
         if (block.input("in0", hidden) != 0 || block.input("in1", modulation) != 0 || block.input("in2", cos) != 0 || block.input("in3", sin) != 0 || block.input("in4", mask) != 0)
             return false;
         ncnn::VkMat result;
@@ -367,8 +365,6 @@ bool QwenTransformer::run_blocks_vulkan(ncnn::VkMat hidden, const ncnn::Mat& mod
             return false;
         hidden = result;
     }
-    if (!models_.transformer_output)
-        return false;
     ncnn::Extractor output = models_.transformer_output->create_extractor();
     if (output.input("in0", hidden) != 0 || output.input("in1", temb) != 0)
         return false;

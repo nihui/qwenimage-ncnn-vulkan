@@ -3,7 +3,6 @@
 #pragma once
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "net.h"
 #include "runtime.h"
@@ -17,8 +16,7 @@ struct ModelPaths
     ModelFiles vae_encoder;
     ModelFiles vae_decoder;
     ModelFiles transformer_input;
-    ModelFiles transformer_blocks_merged;
-    std::vector<ModelFiles> transformer_blocks;
+    ModelFiles transformer_blocks;
     ModelFiles transformer_output;
 };
 
@@ -38,7 +36,7 @@ struct QwenModelSet
     std::unique_ptr<ncnn::Net> vae_encoder;
     std::unique_ptr<ncnn::Net> vae_decoder;
     std::unique_ptr<ncnn::Net> transformer_input;
-    std::vector<std::unique_ptr<ncnn::Net>> transformer_blocks;
+    std::unique_ptr<ncnn::Net> transformer_blocks;
     std::unique_ptr<ncnn::Net> transformer_output;
 
     bool load_text_encoder(const ModelPaths& paths, const RuntimeConfig& config, bool edit_mode = false);

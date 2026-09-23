@@ -2,7 +2,6 @@
 
 #include "models.h"
 
-#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -12,12 +11,6 @@ bool exists(const std::string& path)
 {
     std::ifstream stream(path, std::ios::binary);
     return static_cast<bool>(stream);
-}
-ModelFiles pair_from_param(const std::filesystem::path& path)
-{
-    std::filesystem::path bin = path;
-    bin.replace_extension(".bin");
-    return {path.string(), bin.string()};
 }
 bool valid_file_pair(const ModelFiles& files)
 {
@@ -62,42 +55,25 @@ ModelPaths make_model_paths(const std::string& model_dir)
                          (vae / "decoder.ncnn.bin").string()};
     paths.transformer_input = {(transformer / "input.ncnn.param").string(),
                                (transformer / "input.ncnn.bin").string()};
-    paths.transformer_blocks_merged = {
+    paths.transformer_blocks = {
         (transformer / "blocks.ncnn.param").string(),
         (transformer / "blocks.ncnn.bin").string()};
     paths.transformer_output = {(transformer / "output.ncnn.param").string(),
                                 (transformer / "output.ncnn.bin").string()};
 
-    if (std::filesystem::is_directory(transformer))
-        for (const auto& entry : std::filesystem::directory_iterator(transformer))
-        {
-            const std::string name = entry.path().filename().string();
-            if (entry.path().extension() == ".param"
-                && name.rfind("transformer_block_", 0) == 0)
-                paths.transformer_blocks.push_back(pair_from_param(entry.path()));
-        }
-    std::sort(paths.transformer_blocks.begin(), paths.transformer_blocks.end(), [](const ModelFiles& a, const ModelFiles& b) { return a.param < b.param; });
     return paths;
 }
 bool validate_model_paths(const ModelPaths& paths, std::string* error)
 {
-    const bool has_merged_blocks = valid_file_pair(paths.transformer_blocks_merged);
     if (!valid_file_pair(paths.text_encoder)
         || !valid_file_pair(paths.vae_decoder)
         || !valid_file_pair(paths.transformer_input)
-        || (!has_merged_blocks && paths.transformer_blocks.empty())
+        || !valid_file_pair(paths.transformer_blocks)
         || !valid_file_pair(paths.transformer_output))
     {
         if (error) *error = "model graph files are incomplete";
         return false;
     }
-    if (!has_merged_blocks)
-        for (const ModelFiles& files : paths.transformer_blocks)
-            if (!valid_file_pair(files))
-            {
-                if (error) *error = "missing transformer graph: " + files.param;
-                return false;
-            }
     return true;
 }
 bool validate_edit_model_paths(const ModelPaths& paths, std::string* error)
@@ -190,30 +166,11 @@ bool QwenModelSet::load_transformer(const ModelPaths& paths, const RuntimeConfig
         unload_transformer();
         return false;
     }
-    transformer_blocks.clear();
-    if (valid_file_pair(paths.transformer_blocks_merged))
+    transformer_blocks.reset(new ncnn::Net());
+    if (!load_net(*transformer_blocks, paths.transformer_blocks, config, ModelStage::Transformer))
     {
-        transformer_blocks.emplace_back(new ncnn::Net());
-        if (!load_net(*transformer_blocks.back(), paths.transformer_blocks_merged,
-                      config, ModelStage::Transformer))
-        {
-            unload_transformer();
-            return false;
-        }
-    }
-    else
-    {
-        transformer_blocks.reserve(paths.transformer_blocks.size());
-        for (size_t i = 0; i < paths.transformer_blocks.size(); i++)
-        {
-            transformer_blocks.emplace_back(new ncnn::Net());
-            if (!load_net(*transformer_blocks.back(), paths.transformer_blocks[i],
-                          config, ModelStage::Transformer))
-            {
-                unload_transformer();
-                return false;
-            }
-        }
+        unload_transformer();
+        return false;
     }
     transformer_output.reset(new ncnn::Net());
     if (!load_net(*transformer_output, paths.transformer_output, config,
@@ -225,8 +182,7 @@ bool QwenModelSet::load_transformer(const ModelPaths& paths, const RuntimeConfig
 #if NCNN_VULKAN
     // share one inference pool across all transformer graphs
     set_stage_vkallocators(*transformer_input, transformer_blob_vkallocator, transformer_staging_vkallocator);
-    for (const auto& net : transformer_blocks)
-        set_stage_vkallocators(*net, transformer_blob_vkallocator, transformer_staging_vkallocator);
+    set_stage_vkallocators(*transformer_blocks, transformer_blob_vkallocator, transformer_staging_vkallocator);
     set_stage_vkallocators(*transformer_output, transformer_blob_vkallocator, transformer_staging_vkallocator);
 #endif
     return true;
@@ -262,9 +218,8 @@ void QwenModelSet::unload_vae_decoder()
 
 void QwenModelSet::unload_transformer()
 {
-    // Release the large merged block graph before the small input/output
-    // graphs, so both model weights and Vulkan pipelines are reclaimed.
-    transformer_blocks.clear();
+    // release the large block graph before the small input/output graphs
+    transformer_blocks.reset();
     transformer_input.reset();
     transformer_output.reset();
 #if NCNN_VULKAN
