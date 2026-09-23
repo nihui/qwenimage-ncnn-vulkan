@@ -170,6 +170,7 @@ ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage)
     option.use_packing_layout = config.use_packing_layout;
     option.use_local_pool_allocator = config.use_local_pool_allocator;
     option.use_weights_in_host_memory = config.use_weights_in_host_memory;
+    option.use_mapped_model_loading = true;
     option.use_winograd_convolution = config.use_winograd_convolution;
     option.use_cooperative_matrix = true;
     option.use_shader_local_memory = true;
