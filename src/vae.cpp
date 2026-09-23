@@ -39,79 +39,14 @@ const float kStd[kChannels] = {
     3.9624f, 4.0168f, 3.5643f, 4.055f, 5.5614f, 4.2963f, 4.408f, 3.4959f,
     3.8747f, 3.7608f, 3.5735f, 3.149f, 3.7662f, 3.6746f, 3.4563f, 3.8161f
 };
-ncnn::Mat make_image_mat(int width, int height, int channels, const std::vector<float>& data)
-{
-    return ncnn::Mat(width, height, channels, (void*)data.data()).clone();
-}
-
-ncnn::Mat make_channel_mat(int width, int height, int channels, const std::vector<float>& data)
-{
-    return ncnn::Mat(width, height, channels, (void*)data.data()).clone();
-}
-
-ncnn::Mat clone_output(const ncnn::Mat& source, const RuntimeConfig& config, ModelStage stage)
-{
-    ncnn::Option option = make_ncnn_option(config, stage);
-    ncnn::Mat pack1;
-    if (source.elempack == 1)
-        pack1 = source.clone();
-    else
-        ncnn::convert_packing(source, pack1, 1, option);
-    if (pack1.empty())
-        return ncnn::Mat();
-    if (pack1.elembits() == 32)
-        return pack1;
-    if (pack1.elembits() == 16)
-    {
-        ncnn::Mat fp32;
-        ncnn::cast_bfloat16_to_float32(pack1, fp32, option);
-        return fp32;
-    }
-    return ncnn::Mat();
-}
-
 bool crop_mat(const ncnn::Mat& source, int top, int bottom, int left, int right, ncnn::Mat& destination)
 {
-    if (source.empty() || source.elempack != 1
-        || source.elembits() != 32
-        || (source.dims != 3 && source.dims != 4))
+    if (source.empty() || source.elempack != 1 || source.elembits() != 32 || source.dims != 3)
         return false;
-
-    const int depth = source.dims == 4 ? source.d : 1;
-    const int output_width = source.w - left - right;
-    const int output_height = source.h - top - bottom;
-    if (depth <= 0 || output_width <= 0 || output_height <= 0
-        || top < 0 || bottom < 0 || left < 0 || right < 0)
+    if (top < 0 || bottom < 0 || left < 0 || right < 0 || top + bottom >= source.h || left + right >= source.w)
         return false;
-
-    if (source.dims == 4)
-        destination.create(output_width, output_height, depth, source.c,
-                           4u, 1);
-    else
-        destination.create(output_width, output_height, source.c, 4u, 1);
-    if (destination.empty())
-        return false;
-
-    for (int c = 0; c < source.c; c++)
-    {
-        const ncnn::Mat source_channel = source.channel(c);
-        ncnn::Mat destination_channel = destination.channel(c);
-        for (int d = 0; d < depth; d++)
-        {
-            const ncnn::Mat source_plane = source.dims == 4
-                ? source_channel.depth(d) : source_channel;
-            ncnn::Mat destination_plane = destination.dims == 4
-                ? destination_channel.depth(d) : destination_channel;
-            for (int y = 0; y < output_height; y++)
-            {
-                const float* source_row =
-                    source_plane.row(top + y) + left;
-                float* destination_row = destination_plane.row(y);
-                std::memcpy(destination_row, source_row, (size_t)output_width * sizeof(float));
-            }
-        }
-    }
-    return true;
+    ncnn::copy_cut_border(source, destination, top, bottom, left, right);
+    return !destination.empty();
 }
 
 #if NCNN_VULKAN
@@ -189,66 +124,26 @@ bool extract_blob(const ncnn::Net& net, const RuntimeConfig& config, ModelStage 
     ncnn::Mat raw;
     if (extractor.extract(output_name, raw) != 0)
         return false;
-    output = clone_output(raw, config, stage);
+    output = raw;
     return !output.empty();
 }
 
-bool paste_encoder_tile(const ncnn::Mat& encoder_out, int crop_top, int crop_bottom, int crop_left, int crop_right, int output_x, int output_y, int output_width, int output_height, std::vector<float>& packed)
+bool paste_tile(const ncnn::Mat& source, int top, int bottom, int left, int right, int output_x, int output_y, ncnn::Mat& output)
 {
-    if ((encoder_out.dims != 3
-         && (encoder_out.dims != 4 || encoder_out.d != 1))
-        || encoder_out.c != kChannels || encoder_out.elempack != 1
-        || encoder_out.elembits() != 32)
+    if (source.dims != 3 || source.c != output.c || source.elempack != 1 || source.elembits() != 32)
         return false;
-    const int output_tile_width =
-        encoder_out.w - crop_left - crop_right;
-    const int output_tile_height =
-        encoder_out.h - crop_top - crop_bottom;
-    if (output_tile_width <= 0 || output_tile_height <= 0
-        || output_x < 0 || output_y < 0
-        || output_x + output_tile_width > output_width
-        || output_y + output_tile_height > output_height)
+    const int width = source.w - left - right;
+    const int height = source.h - top - bottom;
+    if (width <= 0 || height <= 0 || top < 0 || bottom < 0 || left < 0 || right < 0 || output_x < 0 || output_y < 0 || output_x + width > output.w || output_y + height > output.h)
         return false;
 
-    const float* source = static_cast<const float*>(encoder_out.data);
-    for (int y = 0; y < output_tile_height; y++)
-        for (int x = 0; x < output_tile_width; x++)
-            for (int c = 0; c < kChannels; c++)
-            {
-                const float value =
-                    source[((size_t)c * encoder_out.h + crop_top + y)
-                           * encoder_out.w + crop_left + x];
-                packed[((size_t)(output_y + y) * output_width
-                         + output_x + x) * kChannels + c] =
-                    (value - kMean[c]) / kStd[c];
-            }
-    return true;
-}
-
-bool paste_decoder_tile(const ncnn::Mat& decoder_out, int crop_top, int crop_bottom, int crop_left, int crop_right, int output_x, int output_y, int output_width, int output_height, std::vector<float>& rgba)
-{
-    if (decoder_out.dims != 3 || decoder_out.c != 4
-        || decoder_out.elempack != 1
-        || decoder_out.elembits() != 32)
-        return false;
-    const int output_tile_width =
-        decoder_out.w - crop_left - crop_right;
-    const int output_tile_height =
-        decoder_out.h - crop_top - crop_bottom;
-    if (output_tile_width <= 0 || output_tile_height <= 0
-        || output_x < 0 || output_y < 0
-        || output_x + output_tile_width > output_width
-        || output_y + output_tile_height > output_height)
-        return false;
-
-    const float* source = static_cast<const float*>(decoder_out.data);
-    for (int y = 0; y < output_tile_height; y++)
-        for (int x = 0; x < output_tile_width; x++)
-            for (int c = 0; c < 4; c++)
-                rgba[((size_t)c * output_height + output_y + y)
-                     * output_width + output_x + x] =
-                    source[((size_t)c * decoder_out.h + crop_top + y)
-                           * decoder_out.w + crop_left + x];
+    for (int c = 0; c < source.c; c++)
+    {
+        const ncnn::Mat source_channel = source.channel(c);
+        ncnn::Mat output_channel = output.channel(c);
+        for (int y = 0; y < height; y++)
+            std::memcpy(output_channel.row(output_y + y) + output_x, source_channel.row(top + y) + left, (size_t)width * sizeof(float));
+    }
     return true;
 }
 
@@ -322,7 +217,7 @@ std::vector<TileAxis> tile_axis_candidates(int length)
     return candidates;
 }
 
-bool process_vae(const ncnn::Net& net, const RuntimeConfig& config, ModelStage stage, const ncnn::Mat& input, int width, int height, int requested_width, int requested_height, std::vector<float>& output)
+bool process_vae(const ncnn::Net& net, const RuntimeConfig& config, ModelStage stage, const ncnn::Mat& input, int width, int height, int requested_width, int requested_height, ncnn::Mat& output)
 {
     const bool encoder = stage == ModelStage::VaeEncoder;
     const char* name = encoder ? "encoder" : "decoder";
@@ -333,14 +228,8 @@ bool process_vae(const ncnn::Net& net, const RuntimeConfig& config, ModelStage s
     VaeWorkspace workspace(net);
     if (!net.opt.use_vulkan_compute && (automatic || (requested_width >= width && requested_height >= height)))
     {
-        ncnn::Mat result;
-        if (!extract_blob(net, config, stage, input, nullptr, nullptr, "out0", workspace, result) || result.w != (encoder ? latent_width : width) || result.h != (encoder ? latent_height : height))
-            return false;
-        output.resize(encoder ? (size_t)latent_width * latent_height * kChannels : (size_t)4 * width * height);
         fprintf(stderr, "vae %s tile size = %d x %d\n", name, width, height);
-        if (encoder)
-            return paste_encoder_tile(result, 0, 0, 0, 0, 0, 0, latent_width, latent_height, output);
-        return paste_decoder_tile(result, 0, 0, 0, 0, 0, 0, width, height, output);
+        return extract_blob(net, config, stage, input, nullptr, nullptr, "out0", workspace, output) && output.dims == 3 && output.w == (encoder ? latent_width : width) && output.h == (encoder ? latent_height : height) && output.c == (encoder ? kChannels : 4);
     }
     // preserve global attention at the original resolution for every tile
     ncnn::Mat attn;
@@ -366,8 +255,13 @@ bool process_vae(const ncnn::Net& net, const RuntimeConfig& config, ModelStage s
         }
     }
 #endif
-    output.resize(encoder ? (size_t)latent_width * latent_height * kChannels : (size_t)4 * width * height);
     fprintf(stderr, "vae %s tile size = %d x %d\n", name, tile_width, tile_height);
+    if (tile_width >= width && tile_height >= height)
+        return extract_blob(net, config, stage, input, bottleneck, &attn, "out0", workspace, output) && output.dims == 3 && output.w == (encoder ? latent_width : width) && output.h == (encoder ? latent_height : height) && output.c == (encoder ? kChannels : 4);
+
+    output.create(encoder ? latent_width : width, encoder ? latent_height : height, encoder ? kChannels : 4);
+    if (output.empty())
+        return false;
     const std::vector<VaeTile> tiles = make_tiles(latent_width, latent_height, tile_width / kVaeScale, tile_height / kVaeScale);
     for (size_t i = 0; i < tiles.size(); i++)
     {
@@ -387,16 +281,8 @@ bool process_vae(const ncnn::Net& net, const RuntimeConfig& config, ModelStage s
         const int bottom = tile.bottom - tile.y1;
         const int left = tile.x0 - tile.left;
         const int right = tile.right - tile.x1;
-        if (encoder)
-        {
-            if (!paste_encoder_tile(result, top, bottom, left, right, tile.x0, tile.y0, latent_width, latent_height, output))
-                return false;
-        }
-        else
-        {
-            if (!paste_decoder_tile(result, top * kVaeScale, bottom * kVaeScale, left * kVaeScale, right * kVaeScale, tile.x0 * kVaeScale, tile.y0 * kVaeScale, width, height, output))
-                return false;
-        }
+        if (!paste_tile(result, top * output_scale, bottom * output_scale, left * output_scale, right * output_scale, tile.x0 * output_scale, tile.y0 * output_scale, output))
+            return false;
     }
     return true;
 }
@@ -440,26 +326,49 @@ bool get_optimal_vae_tile_size(int width, int height, uint64_t available_memory,
     return best_count != UINT64_MAX;
 }
 
-bool QwenVaeEncoder::encode(const std::vector<float>& rgba, int width, int height, std::vector<float>& packed, int tile_width, int tile_height) const
+bool QwenVaeEncoder::encode(const ncnn::Mat& rgba, ncnn::Mat& packed, int tile_width, int tile_height) const
 {
-    if (width <= 0 || height <= 0 || width % kVaeScale || height % kVaeScale || rgba.size() != (size_t)4 * width * height)
+    if (rgba.empty() || rgba.dims != 3 || rgba.c != 4 || rgba.elempack != 1 || rgba.elembits() != 32 || rgba.w % kVaeScale || rgba.h % kVaeScale)
         return false;
-    ncnn::Mat input = make_image_mat(width, height, 4, rgba);
-    return process_vae(net_, config_, ModelStage::VaeEncoder, input, width, height, tile_width, tile_height, packed);
+    ncnn::Mat output;
+    if (!process_vae(net_, config_, ModelStage::VaeEncoder, rgba, rgba.w, rgba.h, tile_width, tile_height, output))
+        return false;
+    float norm[kChannels];
+    for (int c = 0; c < kChannels; c++)
+        norm[c] = 1.f / kStd[c];
+    output.substract_mean_normalize(kMean, norm);
+    packed.create(kChannels, output.w * output.h);
+    if (packed.empty())
+        return false;
+    for (int c = 0; c < kChannels; c++)
+    {
+        const float* source = output.channel(c);
+        for (int y = 0; y < output.h; y++)
+            for (int x = 0; x < output.w; x++)
+                packed[((size_t)y * output.w + x) * kChannels + c] = source[(size_t)y * output.w + x];
+    }
+    return true;
 }
 
-bool QwenVaeDecoder::decode(const std::vector<float>& packed, int width, int height, std::vector<float>& rgba, int tile_width, int tile_height) const
+bool QwenVaeDecoder::decode(const ncnn::Mat& packed, int width, int height, ncnn::Mat& rgba, int tile_width, int tile_height) const
 {
-    if (width <= 0 || height <= 0 || width % kVaeScale || height % kVaeScale || packed.size() != (size_t)(width / kVaeScale) * (height / kVaeScale) * kChannels)
+    if (width <= 0 || height <= 0 || width % kVaeScale || height % kVaeScale || packed.empty() || packed.dims != 2 || packed.w != kChannels || packed.h != (width / kVaeScale) * (height / kVaeScale) || packed.elempack != 1 || packed.elembits() != 32)
         return false;
     const int latent_width = width / kVaeScale;
     const int latent_height = height / kVaeScale;
-    std::vector<float> latent_data((size_t)kChannels * latent_height * latent_width);
-    for (int y = 0; y < latent_height; y++)
-        for (int x = 0; x < latent_width; x++)
-            for (int c = 0; c < kChannels; c++)
-                latent_data[((size_t)c * latent_height + y) * latent_width + x] = packed[((size_t)y * latent_width + x) * kChannels + c] * kStd[c] + kMean[c];
-    ncnn::Mat input = make_channel_mat(latent_width, latent_height, kChannels, latent_data);
+    ncnn::Mat input(latent_width, latent_height, kChannels);
+    if (input.empty())
+        return false;
+    float mean[kChannels];
+    for (int c = 0; c < kChannels; c++)
+    {
+        float* destination = input.channel(c);
+        for (int y = 0; y < latent_height; y++)
+            for (int x = 0; x < latent_width; x++)
+                destination[(size_t)y * latent_width + x] = packed[((size_t)y * latent_width + x) * kChannels + c];
+        mean[c] = -kMean[c] / kStd[c];
+    }
+    input.substract_mean_normalize(mean, kStd);
     return process_vae(net_, config_, ModelStage::VaeDecoder, input, width, height, tile_width, tile_height, rgba);
 }
 }

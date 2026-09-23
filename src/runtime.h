@@ -66,6 +66,4 @@ ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage);
 
 bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& config, ModelStage stage);
 
-ncnn::Mat clone_fp32(const ncnn::Mat& source, const RuntimeConfig& config);
-
 } // namespace qwenimage

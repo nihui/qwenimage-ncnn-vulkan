@@ -111,25 +111,4 @@ bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& conf
     return true;
 }
 
-ncnn::Mat clone_fp32(const ncnn::Mat& source, const RuntimeConfig& config)
-{
-    ncnn::Option option = make_ncnn_option(config, ModelStage::Transformer);
-    ncnn::Mat pack1;
-    if (source.elempack == 1)
-        pack1 = source.clone();
-    else
-        ncnn::convert_packing(source, pack1, 1, option);
-    if (pack1.empty())
-        return ncnn::Mat();
-    if (pack1.elembits() == 32)
-        return pack1;
-    if (pack1.elembits() == 16)
-    {
-        ncnn::Mat fp32;
-        ncnn::cast_bfloat16_to_float32(pack1, fp32, option);
-        return fp32;
-    }
-    return ncnn::Mat();
-}
-
 } // namespace qwenimage

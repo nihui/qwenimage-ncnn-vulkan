@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "mat.h"
+
 namespace qwenimage {
 
 struct QwenRgbImage
@@ -28,5 +30,5 @@ bool save_rgb_png(const std::string& path, const QwenRgbImage& image);
 bool save_float_png(const std::string& path, const std::vector<float>& image, int width, int height);
 std::string make_batch_output_path(const std::string& path, int b, int batch);
 
-bool save_rgba_float_png(const std::string& path, const std::vector<float>& image, int width, int height);
+bool save_rgba_float_png(const std::string& path, ncnn::Mat& image);
 } // namespace qwenimage

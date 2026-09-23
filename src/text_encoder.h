@@ -1,7 +1,6 @@
 // qwen-image implemented with ncnn library
 
 #pragma once
-#include <string>
 #include <vector>
 
 #include "models.h"
@@ -20,8 +19,8 @@ class QwenTextEncoder
 public:
     QwenTextEncoder(const QwenModelSet& models, const RuntimeConfig& config)
         : models_(models), config_(config) {}
-    bool encode(const std::vector<int>& input_ids, int valid_input_tokens, const TextEncoderConfig& text_config, std::vector<float>& output, int& valid_output_tokens) const;
-    bool encode_edit(const std::vector<int>& input_ids, const std::vector<float>& cos, const std::vector<float>& sin, const std::vector<float>& attention_mask, const std::vector<float>& image_embeds, const std::vector<float>& image_mask, const std::vector<std::vector<float>>& deepstack, std::vector<float>& output) const;
+    bool encode(const ncnn::Mat& input_ids, int valid_input_tokens, const TextEncoderConfig& text_config, ncnn::Mat& output, int& valid_output_tokens) const;
+    bool encode_edit(const ncnn::Mat& input_ids, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& attention_mask, const ncnn::Mat& image_embeds, const ncnn::Mat& image_mask, const std::vector<ncnn::Mat>& deepstack, ncnn::Mat& output) const;
 private:
     const QwenModelSet& models_;
     const RuntimeConfig& config_;

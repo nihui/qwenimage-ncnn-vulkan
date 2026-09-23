@@ -5,10 +5,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <fstream>
 #include <random>
 #include <cstdio>
-#include <iterator>
 #include <vector>
 
 #include "image_io.h"
@@ -23,7 +21,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr int kHidden = 4096;
 constexpr int kLatent = 64;
-constexpr int kTextRope = 128;
+constexpr int kTextRope = 64;
 
 
 double elapsed_ms(const Clock::time_point& start)
@@ -32,59 +30,87 @@ double elapsed_ms(const Clock::time_point& start)
 }
 
 
-bool read_bytes(const std::string& path, std::vector<char>& data)
+bool valid_matrix(const ncnn::Mat& value, int width, int height)
 {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) return false;
-    stream.seekg(0, std::ios::end);
-    const std::streamoff size = stream.tellg();
-    if (size < 0) return false;
-    stream.seekg(0, std::ios::beg);
-    data.resize((size_t)size);
-    stream.read(data.data(), size);
-    return stream.good() || stream.eof();
+    return !value.empty() && value.refcount && value.dims == 2 && value.w == width && value.h == height && value.elempack == 1 && value.elembits() == 32;
 }
 
-bool read_f32_all(const std::string& path, std::vector<float>& data)
+bool read_tensor(const std::string& path, int width, int height, ncnn::Mat& data)
 {
-    std::vector<char> bytes;
-    if (!read_bytes(path, bytes) || bytes.size() % sizeof(float))
+    FILE* fp = fopen(path.c_str(), "rb");
+    if (!fp)
         return false;
-    data.resize(bytes.size() / sizeof(float));
-    std::memcpy(data.data(), bytes.data(), bytes.size());
-    return true;
-}
-
-bool read_i32_all(const std::string& path, std::vector<int>& data)
-{
-    std::vector<char> bytes;
-    if (!read_bytes(path, bytes) || bytes.size() % sizeof(int))
+    if (fseek(fp, 0, SEEK_END) != 0)
+    {
+        fclose(fp);
         return false;
-    data.resize(bytes.size() / sizeof(int));
-    std::memcpy(data.data(), bytes.data(), bytes.size());
-    return true;
-}
-
-void drop_rows(const std::vector<float>& source, int rows, int drop, int dim, std::vector<float>& target)
-{
-    const int kept = rows - drop;
-    target.resize((size_t)kept * dim);
-    std::memcpy(target.data(),
-                source.data() + (size_t)drop * dim,
-                target.size() * sizeof(float));
-}
-
-bool make_multimodal_feature_rows(const VisionFeatures& vision, const std::vector<float>& full_mask, int tokens, std::vector<float>& image_embeds, std::vector<std::vector<float>>& deepstack, std::vector<unsigned char>& slot_mask)
-{
-    if (full_mask.size() != (size_t)tokens
-        || vision.tokens <= 0
-        || vision.image.size() != (size_t)vision.tokens * kHidden
-        || vision.deep0.size() != vision.image.size()
-        || vision.deep1.size() != vision.image.size()
-        || vision.deep2.size() != vision.image.size())
+    }
+    const long bytes = ftell(fp);
+    if (bytes <= 0 || bytes % sizeof(float) || height <= 0 || fseek(fp, 0, SEEK_SET) != 0)
+    {
+        fclose(fp);
         return false;
-    image_embeds.assign((size_t)tokens * kHidden, 0.f);
-    deepstack.assign(3, std::vector<float>((size_t)tokens * kHidden, 0.f));
+    }
+    if (width == 0)
+        width = (int)(bytes / sizeof(float) / height);
+    if ((size_t)bytes != (size_t)width * height * sizeof(float))
+    {
+        fclose(fp);
+        return false;
+    }
+    data.create(width, height);
+    const bool ok = !data.empty() && fread(data.data, 1, bytes, fp) == (size_t)bytes;
+    return fclose(fp) == 0 && ok;
+}
+
+bool read_rope(const std::string& path, int width, int height, bool channels, ncnn::Mat& data)
+{
+    FILE* fp = fopen(path.c_str(), "rb");
+    if (!fp)
+        return false;
+    if (width <= 0 || height <= 0 || fseek(fp, 0, SEEK_END) != 0 || ftell(fp) != (long)((size_t)width * height * 2 * sizeof(float)) || fseek(fp, 0, SEEK_SET) != 0)
+    {
+        fclose(fp);
+        return false;
+    }
+    if (channels)
+        data.create(width, height, 1);
+    else
+        data.create(width, height);
+    bool ok = !data.empty();
+    for (int i = 0; i < height && ok; i++)
+    {
+        ok = fread(data.row(i), sizeof(float), width, fp) == (size_t)width;
+        ok = fseek(fp, (long)width * sizeof(float), SEEK_CUR) == 0 && ok;
+    }
+    ok = fgetc(fp) == EOF && ok;
+    return fclose(fp) == 0 && ok;
+}
+
+bool drop_rows(const ncnn::Mat& source, int drop, ncnn::Mat& target)
+{
+    if (source.empty() || source.dims != 2 || drop < 0 || drop >= source.h)
+        return false;
+    ncnn::copy_cut_border(source, target, drop, 0, 0, 0);
+    return !target.empty() && target.refcount;
+}
+
+bool make_multimodal_feature_rows(const VisionFeatures& vision, const ncnn::Mat& full_mask, int tokens, ncnn::Mat& image_embeds, std::vector<ncnn::Mat>& deepstack, std::vector<unsigned char>& slot_mask)
+{
+    if (!valid_matrix(full_mask, 1, tokens) || vision.tokens <= 0 || !valid_matrix(vision.image, kHidden, vision.tokens) || !valid_matrix(vision.deep0, kHidden, vision.tokens) || !valid_matrix(vision.deep1, kHidden, vision.tokens) || !valid_matrix(vision.deep2, kHidden, vision.tokens))
+        return false;
+    image_embeds.create(kHidden, tokens);
+    if (image_embeds.empty())
+        return false;
+    image_embeds.fill(0.f);
+    deepstack.resize(3);
+    for (ncnn::Mat& value : deepstack)
+    {
+        value.create(kHidden, tokens);
+        if (value.empty())
+            return false;
+        value.fill(0.f);
+    }
     slot_mask.assign(tokens, 0);
     int row = 0;
     for (int i = 0; i < tokens; i++)
@@ -93,17 +119,11 @@ bool make_multimodal_feature_rows(const VisionFeatures& vision, const std::vecto
             if (row >= vision.tokens)
                 return false;
             slot_mask[i] = 1;
-            std::memcpy(image_embeds.data() + (size_t)i * kHidden,
-                        vision.image.data() + (size_t)row * kHidden,
-                        (size_t)kHidden * sizeof(float));
+            std::memcpy(image_embeds.row(i), vision.image.row(row), (size_t)kHidden * sizeof(float));
             for (int level = 0; level < 3; level++)
             {
-                const std::vector<float>& source =
-                    level == 0 ? vision.deep0
-                    : level == 1 ? vision.deep1 : vision.deep2;
-                std::memcpy(deepstack[level].data() + (size_t)i * kHidden,
-                            source.data() + (size_t)row * kHidden,
-                            (size_t)kHidden * sizeof(float));
+                const ncnn::Mat& source = level == 0 ? vision.deep0 : level == 1 ? vision.deep1 : vision.deep2;
+                std::memcpy(deepstack[level].row(i), source.row(row), (size_t)kHidden * sizeof(float));
             }
             row++;
         }
@@ -192,13 +212,13 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
             || condition_widths[i] % 16 || condition_heights[i] % 16)
             return false;
 
-    std::vector<int> ids;
-    std::vector<int> negative_ids;
-    std::vector<float> text_cos, text_sin, text_attention, full_image_mask;
-    std::vector<float> negative_text_cos, negative_text_sin;
-    std::vector<float> negative_text_attention, negative_image_mask;
-    std::vector<float> patch, position, vision_cos, vision_sin;
-    std::vector<std::vector<float>> rgba_images(image_count);
+    ncnn::Mat ids;
+    ncnn::Mat negative_ids;
+    ncnn::Mat text_cos, text_sin, text_attention, full_image_mask;
+    ncnn::Mat negative_text_cos, negative_text_sin;
+    ncnn::Mat negative_text_attention, negative_image_mask;
+    ncnn::Mat patch, position, vision_cos, vision_sin;
+    std::vector<ncnn::Mat> rgba_images(image_count);
     if (native_inputs)
     {
         ids = request.input_ids_values;
@@ -221,48 +241,46 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         for (size_t i = 0; i < image_count; i++)
         {
             rgba_images[i] = request.prepared_images[i].rgba;
-            if (rgba_images[i].size() != (size_t)4 * condition_widths[i] * condition_heights[i])
+            if (rgba_images[i].w != condition_widths[i] || rgba_images[i].h != condition_heights[i])
                 return false;
         }
     }
     else
     {
-        if (!read_i32_all(request.input_ids, ids)
-            || !read_f32_all(request.text_cos, text_cos)
-            || !read_f32_all(request.text_sin, text_sin)
-            || !read_f32_all(request.text_attention, text_attention)
-            || !read_f32_all(request.image_mask, full_image_mask)
-            || !read_f32_all(request.vision_patch, patch)
-            || !read_f32_all(request.vision_pos, position)
-            || !read_f32_all(request.vision_cos, vision_cos)
-            || !read_f32_all(request.vision_sin, vision_sin))
+        if (!read_tensor(request.input_ids, 0, 1, ids)
+            || !read_rope(request.text_cos, kTextRope, ids.w, true, text_cos)
+            || !read_rope(request.text_sin, kTextRope, ids.w, true, text_sin)
+            || !read_tensor(request.text_attention, ids.w, ids.w, text_attention)
+            || !read_tensor(request.image_mask, 1, ids.w, full_image_mask)
+            || !read_tensor(request.vision_patch, 1536, request.vision_patch_tokens, patch)
+            || !read_tensor(request.vision_pos, 1152, request.vision_patch_tokens, position)
+            || !read_rope(request.vision_cos, 36, request.vision_patch_tokens, false, vision_cos)
+            || !read_rope(request.vision_sin, 36, request.vision_patch_tokens, false, vision_sin))
             return false;
         for (size_t i = 0; i < image_count; i++)
-            if (!read_f32_all(vae_files[i], rgba_images[i])
-                || rgba_images[i].size() != (size_t)4 * condition_widths[i]
-                                          * condition_heights[i])
+        {
+            ncnn::Mat rgba;
+            if (!read_tensor(vae_files[i], condition_widths[i], condition_heights[i] * 4, rgba))
                 return false;
+            rgba_images[i] = rgba.reshape(condition_widths[i], condition_heights[i], 4);
+            if (rgba_images[i].empty())
+                return false;
+        }
     }
 
-    const int full_tokens = (int)ids.size();
-    const int negative_full_tokens = (int)negative_ids.size();
-    if (full_tokens <= request.drop_system_tokens
-        || text_cos.size() != (size_t)full_tokens * kTextRope
-        || text_sin.size() != text_cos.size()
-        || text_attention.size() != (size_t)full_tokens * full_tokens
-        || full_image_mask.size() != (size_t)full_tokens
-        || request.vision_patch_tokens <= 0
-        || patch.size() != (size_t)request.vision_patch_tokens * 1536
-        || position.size() != (size_t)request.vision_patch_tokens * 1152
-        || vision_cos.size() != (size_t)request.vision_patch_tokens * 72
-        || vision_sin.size() != vision_cos.size())
+    const int full_tokens = ids.w;
+    const int negative_full_tokens = negative_ids.w;
+    if (full_tokens <= request.drop_system_tokens || !valid_matrix(ids, full_tokens, 1)
+        || text_cos.dims != 3 || text_cos.w != kTextRope || text_cos.h != full_tokens || text_cos.c != 1
+        || text_sin.dims != 3 || text_sin.w != kTextRope || text_sin.h != full_tokens || text_sin.c != 1
+        || !valid_matrix(text_attention, full_tokens, full_tokens) || !valid_matrix(full_image_mask, 1, full_tokens)
+        || request.vision_patch_tokens <= 0 || !valid_matrix(patch, 1536, request.vision_patch_tokens)
+        || !valid_matrix(position, 1152, request.vision_patch_tokens) || !valid_matrix(vision_cos, 36, request.vision_patch_tokens) || !valid_matrix(vision_sin, 36, request.vision_patch_tokens))
         return false;
-    if (do_true_cfg
-        && (negative_full_tokens <= request.drop_system_tokens
-            || negative_text_cos.size() != (size_t)negative_full_tokens * kTextRope
-            || negative_text_sin.size() != negative_text_cos.size()
-            || negative_text_attention.size() != (size_t)negative_full_tokens * negative_full_tokens
-            || negative_image_mask.size() != (size_t)negative_full_tokens))
+    if (do_true_cfg && (negative_full_tokens <= request.drop_system_tokens || !valid_matrix(negative_ids, negative_full_tokens, 1)
+        || negative_text_cos.dims != 3 || negative_text_cos.w != kTextRope || negative_text_cos.h != negative_full_tokens || negative_text_cos.c != 1
+        || negative_text_sin.dims != 3 || negative_text_sin.w != kTextRope || negative_text_sin.h != negative_full_tokens || negative_text_sin.c != 1
+        || !valid_matrix(negative_text_attention, negative_full_tokens, negative_full_tokens) || !valid_matrix(negative_image_mask, 1, negative_full_tokens)))
         return false;
 
     if (!models_.load_vision_encoder(paths_, config_))
@@ -285,14 +303,14 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
     }
     if (timings) timings->vision_ms = elapsed_ms(vision_begin);
 
-    std::vector<float> image_embeds;
-    std::vector<std::vector<float>> deepstack;
+    ncnn::Mat image_embeds;
+    std::vector<ncnn::Mat> deepstack;
     std::vector<unsigned char> full_slots;
     if (!make_multimodal_feature_rows(vision_features, full_image_mask, full_tokens, image_embeds, deepstack, full_slots))
         return false;
 
-    std::vector<float> negative_image_embeds;
-    std::vector<std::vector<float>> negative_deepstack;
+    ncnn::Mat negative_image_embeds;
+    std::vector<ncnn::Mat> negative_deepstack;
     std::vector<unsigned char> negative_full_slots;
     if (do_true_cfg
         && !make_multimodal_feature_rows(vision_features, negative_image_mask, negative_full_tokens, negative_image_embeds, negative_deepstack, negative_full_slots))
@@ -303,8 +321,8 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         fprintf(stderr, "edit text encoder graph load failed\n");
         return false;
     }
-    std::vector<float> full_text;
-    std::vector<float> negative_full_text;
+    ncnn::Mat full_text;
+    ncnn::Mat negative_full_text;
     const Clock::time_point text_begin = Clock::now();
     bool text_ok = false;
     {
@@ -323,19 +341,21 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
 
     const int drop = request.drop_system_tokens;
     const int text_tokens = full_tokens - drop;
-    std::vector<float> text;
-    drop_rows(full_text, full_tokens, drop, kHidden, text);
+    ncnn::Mat text;
+    if (!drop_rows(full_text, drop, text))
+        return false;
     std::vector<unsigned char> text_slots(text_tokens);
     for (int i = 0; i < text_tokens; i++)
         text_slots[i] = full_slots[drop + i];
 
     const int negative_text_tokens = do_true_cfg
         ? negative_full_tokens - drop : text_tokens;
-    std::vector<float> negative_text;
+    ncnn::Mat negative_text;
     std::vector<unsigned char> negative_text_slots;
     if (do_true_cfg)
     {
-        drop_rows(negative_full_text, negative_full_tokens, drop, kHidden, negative_text);
+        if (!drop_rows(negative_full_text, drop, negative_text))
+            return false;
         negative_text_slots.resize(negative_text_tokens);
         for (int i = 0; i < negative_text_tokens; i++)
             negative_text_slots[i] = negative_full_slots[drop + i];
@@ -346,7 +366,13 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         fprintf(stderr, "edit VAE encoder graph load failed\n");
         return false;
     }
-    std::vector<float> condition_latents;
+    int condition_tokens = 0;
+    for (size_t i = 0; i < image_count; i++)
+        condition_tokens += (condition_widths[i] / 16) * (condition_heights[i] / 16);
+    ncnn::Mat condition_latents(kLatent, condition_tokens);
+    if (condition_latents.empty())
+        return false;
+    int condition_offset = 0;
     std::vector<TransformerImageShape> image_shapes;
     const Clock::time_point vae_encode_begin = Clock::now();
     bool vae_encode_ok = true;
@@ -354,8 +380,8 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         QwenVaeEncoder encoder(*models_.vae_encoder, config_);
         for (size_t i = 0; i < rgba_images.size(); i++)
         {
-            std::vector<float> image_latents;
-            if (!encoder.encode(rgba_images[i], condition_widths[i], condition_heights[i], image_latents))
+            ncnn::Mat image_latents;
+            if (!encoder.encode(rgba_images[i], image_latents))
             {
                 fprintf(stderr, "edit VAE encoder failed for reference image %zu\n", i);
                 vae_encode_ok = false;
@@ -363,13 +389,13 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
             }
             const int image_h = condition_heights[i] / 16;
             const int image_w = condition_widths[i] / 16;
-            if (image_latents.size() != (size_t)image_h * image_w * kLatent)
+            if (!valid_matrix(image_latents, kLatent, image_h * image_w))
             {
                 vae_encode_ok = false;
                 break;
             }
-            condition_latents.insert(condition_latents.end(),
-                                     image_latents.begin(), image_latents.end());
+            std::memcpy(condition_latents.row(condition_offset), image_latents.data, (size_t)image_h * image_w * kLatent * sizeof(float));
+            condition_offset += image_h * image_w;
             image_shapes.push_back({image_h, image_w});
         }
     }
@@ -395,55 +421,62 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         return false;
     }
     const std::vector<float> sigmas = QwenScheduler::make_sigmas(request.steps, target_tokens, false);
-    std::vector<std::vector<float>> batch_latents(request.batch);
+    std::vector<ncnn::Mat> batch_latents(request.batch);
     const Clock::time_point transformer_begin = Clock::now();
     bool transformer_ok = true;
-    for (int b = 0; b < request.batch && transformer_ok; b++)
     {
-        std::vector<float> target_latents((size_t)target_tokens * kLatent);
-        std::mt19937 gen(static_cast<unsigned int>(request.seed + (uint64_t)b));
-        std::normal_distribution<float> dist(0.f, 1.f);
-        for (float& value : target_latents)
-            value = dist(gen);
-
-        QwenTransformer positive_transformer(models_, config_, text_tokens, target_tokens, target_h, target_w);
-        QwenTransformer negative_transformer(models_, config_, negative_text_tokens, target_tokens, target_h, target_w);
-        for (int z = 0; z < request.steps; z++)
+        QwenTransformer positive_transformer(models_, config_, text_tokens, target_tokens);
+        QwenTransformer negative_transformer(models_, config_, negative_text_tokens, target_tokens);
+        if (!positive_transformer.prepare_edit(condition_latents, text, text_slots, image_shapes) || (do_true_cfg && !negative_transformer.prepare_edit(condition_latents, negative_text, negative_text_slots, image_shapes)))
+            return false;
+        for (int b = 0; b < request.batch && transformer_ok; b++)
         {
-            std::vector<float> noise;
-            if (!positive_transformer.run_edit(condition_latents, target_latents, text, text_slots, image_shapes, sigmas[z], noise))
+            ncnn::Mat target_latents(kLatent, target_tokens);
+            if (target_latents.empty())
+                return false;
+            std::mt19937 gen(static_cast<unsigned int>(request.seed + (uint64_t)b));
+            std::normal_distribution<float> dist(0.f, 1.f);
+            float* values = target_latents;
+            for (size_t i = 0; i < (size_t)target_tokens * kLatent; i++)
+                values[i] = dist(gen);
+
+            for (int z = 0; z < request.steps; z++)
             {
-                fprintf(stderr, "edit transformer failed at step %d of image %d\n", z, b);
-                transformer_ok = false;
-                break;
-            }
-            if (do_true_cfg)
-            {
-                std::vector<float> negative_noise;
-                if (!negative_transformer.run_edit(condition_latents, target_latents, negative_text, negative_text_slots, image_shapes, sigmas[z], negative_noise) || negative_noise.size() != noise.size())
+                ncnn::Mat noise;
+                if (!positive_transformer.run_edit(target_latents, sigmas[z], noise))
                 {
-                    fprintf(stderr, "edit negative transformer failed at step %d of image %d\n", z, b);
+                    fprintf(stderr, "edit transformer failed at step %d of image %d\n", z, b);
                     transformer_ok = false;
                     break;
                 }
-                for (size_t i = 0; i < noise.size(); i++)
-                    noise[i] = negative_noise[i] + request.guidance_scale * (noise[i] - negative_noise[i]);
-            }
+                if (do_true_cfg)
+                {
+                    ncnn::Mat negative_noise;
+                    if (!negative_transformer.run_edit(target_latents, sigmas[z], negative_noise) || negative_noise.w != noise.w || negative_noise.h != noise.h)
+                    {
+                        fprintf(stderr, "edit negative transformer failed at step %d of image %d\n", z, b);
+                        transformer_ok = false;
+                        break;
+                    }
+                    for (size_t i = 0; i < (size_t)noise.w * noise.h; i++)
+                        noise[i] = negative_noise[i] + request.guidance_scale * (noise[i] - negative_noise[i]);
+                }
 
-            const float dt = sigmas[z + 1] - sigmas[z];
-            for (size_t i = 0; i < target_latents.size(); i++)
-                target_latents[i] += dt * noise[i];
-            if (request.batch > 1)
-            {
-                fprintf(stderr, "step %d/%d of image %d/%d done\n", z + 1, request.steps, b + 1, request.batch);
+                const float dt = sigmas[z + 1] - sigmas[z];
+                for (size_t i = 0; i < (size_t)target_latents.w * target_latents.h; i++)
+                    target_latents[i] += dt * noise[i];
+                if (request.batch > 1)
+                {
+                    fprintf(stderr, "step %d/%d of image %d/%d done\n", z + 1, request.steps, b + 1, request.batch);
+                }
+                else
+                {
+                    fprintf(stderr, "step %d/%d done\n", z + 1, request.steps);
+                }
             }
-            else
-            {
-                fprintf(stderr, "step %d/%d done\n", z + 1, request.steps);
-            }
+            if (transformer_ok)
+                batch_latents[b] = std::move(target_latents);
         }
-        if (transformer_ok)
-            batch_latents[b] = std::move(target_latents);
     }
     models_.unload_transformer();
     if (!transformer_ok)
@@ -461,7 +494,7 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         QwenVaeDecoder decoder(*models_.vae_decoder, config_);
         for (int b = 0; b < request.batch; b++)
         {
-            std::vector<float> image;
+            ncnn::Mat image;
             const Clock::time_point decode_begin = Clock::now();
             if (!decoder.decode(batch_latents[b], request.width, request.height, image))
             {
@@ -471,7 +504,7 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
             }
             vae_decoder_ms += elapsed_ms(decode_begin);
             const std::string output_path = make_batch_output_path(request.output, b, request.batch);
-            if (!save_rgba_float_png(output_path, image, request.width, request.height))
+            if (!save_rgba_float_png(output_path, image))
             {
                 fprintf(stderr, "failed to save output %s\n", output_path.c_str());
                 vae_decode_ok = false;

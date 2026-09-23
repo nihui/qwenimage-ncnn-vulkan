@@ -330,11 +330,12 @@ std::string make_batch_output_path(const std::string& path, int b, int batch)
     return path.substr(0, dot) + suffix + path.substr(dot);
 }
 
-bool save_rgba_float_png(const std::string& path, const std::vector<float>& image, int width, int height)
+bool save_rgba_float_png(const std::string& path, ncnn::Mat& image)
 {
-    if (width <= 0 || height <= 0
-        || image.size() != (size_t)4 * width * height)
+    if (image.empty() || image.dims != 3 || image.c != 4 || image.elempack != 1 || image.elembits() != 32)
         return false;
+    const int width = image.w;
+    const int height = image.h;
 
     const size_t dot = path.find_last_of('.');
     std::string extension = dot == std::string::npos
@@ -342,14 +343,14 @@ bool save_rgba_float_png(const std::string& path, const std::vector<float>& imag
     const bool jpeg = extension == "jpg" || extension == "jpeg";
     const int channels = jpeg ? 3 : 4;
     std::vector<unsigned char> pixels((size_t)width * height * channels);
-    for (int y = 0; y < height; y++)
-        for (int x = 0; x < width; x++)
-            for (int c = 0; c < channels; c++)
-            {
-                const float value = std::max(0.f, std::min(1.f, image[((size_t)c * height + y) * width + x] * .5f + .5f));
-                pixels[((size_t)y * width + x) * channels + c] =
-                    (unsigned char)std::lround(value * 255.f);
-            }
+    // to_pixels truncates, so include 0.5 for rounding
+    const float mean[4] = {-128.f / 127.5f, -128.f / 127.5f, -128.f / 127.5f, -128.f / 127.5f};
+    const float norm[4] = {127.5f, 127.5f, 127.5f, 127.5f};
+    image.substract_mean_normalize(mean, norm);
+    if (jpeg)
+        image.channel_range(0, 3).to_pixels(pixels.data(), ncnn::Mat::PIXEL_RGB);
+    else
+        image.to_pixels(pixels.data(), ncnn::Mat::PIXEL_RGBA);
 
     if (jpeg)
     {

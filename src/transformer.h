@@ -14,27 +14,37 @@ struct TransformerImageShape
 class QwenTransformer
 {
 public:
-    QwenTransformer(const QwenModelSet& models, const RuntimeConfig& config, int text_tokens, int image_tokens, int latent_height, int latent_width)
-        : models_(models), config_(config), text_tokens_(text_tokens),
-          image_tokens_(image_tokens), latent_height_(latent_height),
-          latent_width_(latent_width) {}
+    QwenTransformer(const QwenModelSet& models, const RuntimeConfig& config, int text_tokens, int image_tokens)
+        : models_(models), config_(config), text_tokens_(text_tokens), image_tokens_(image_tokens), edit_ready_(false) {}
 
-    static void make_rope(int text_tokens, int valid_text_tokens, int latent_height, int latent_width, std::vector<float>& cos, std::vector<float>& sin);
-    static void make_attention_mask(int text_tokens, int valid_text_tokens, int image_tokens, std::vector<float>& mask);
-    bool run(const std::vector<float>& latents, const std::vector<float>& text, float timestep, const std::vector<float>& cos, const std::vector<float>& sin, const std::vector<float>& mask, std::vector<float>& noise) const;
+    static bool make_rope(int text_tokens, int valid_text_tokens, int latent_height, int latent_width, ncnn::Mat& cos, ncnn::Mat& sin);
+    static bool make_attention_mask(int text_tokens, int valid_text_tokens, int image_tokens, ncnn::Mat& mask);
+    bool run(const ncnn::Mat& latents, const ncnn::Mat& text, float timestep, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, ncnn::Mat& noise) const;
 
-    // Run the image-conditioned layout used by Qwen-Image 2.1.  The
-    // condition shapes precede the target shape; text_image_slots marks the
-    // image-pad slots in the post-system-drop text sequence.
-    bool run_edit(const std::vector<float>& condition_latents, const std::vector<float>& latents, const std::vector<float>& text, const std::vector<unsigned char>& text_image_slots, const std::vector<TransformerImageShape>& image_shapes, float timestep, std::vector<float>& noise) const;
+    // prepare the fixed image layout once before the denoising loop
+    bool prepare_edit(const ncnn::Mat& condition_latents, const ncnn::Mat& text, const std::vector<unsigned char>& text_image_slots, const std::vector<TransformerImageShape>& image_shapes);
+    bool run_edit(const ncnn::Mat& latents, float timestep, ncnn::Mat& noise);
 
 private:
+    bool run_input(const ncnn::Mat& latents, const ncnn::Mat& text, float timestep, ncnn::Mat& hidden, ncnn::Mat& modulation, ncnn::Mat& temb, int type = 1) const;
+    bool run_blocks(ncnn::Mat hidden, const ncnn::Mat& modulation, const ncnn::Mat& temb, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, ncnn::Mat& noise) const;
+
+#if NCNN_VULKAN
+    bool run_input_vulkan(const ncnn::Mat& latents, const ncnn::Mat& text, float timestep, ncnn::VkMat& hidden, ncnn::Mat& modulation, ncnn::Mat& temb) const;
+    bool run_blocks_vulkan(ncnn::VkMat hidden, const ncnn::Mat& modulation, const ncnn::Mat& temb, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, ncnn::Mat& noise) const;
+#endif
+
     const QwenModelSet& models_;
     const RuntimeConfig& config_;
     int text_tokens_;
     int image_tokens_;
-    int latent_height_;
-    int latent_width_;
+    bool edit_ready_;
+    ncnn::Mat edit_latents_;
+    ncnn::Mat edit_text_;
+    ncnn::Mat edit_cos_;
+    ncnn::Mat edit_sin_;
+    ncnn::Mat edit_mask_;
+    std::vector<unsigned char> target_mask_;
+    std::vector<int> joint_rows_;
 };
 }
-

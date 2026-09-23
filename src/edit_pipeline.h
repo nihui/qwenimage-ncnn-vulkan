@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "models.h"
 
@@ -12,34 +13,34 @@ struct EditPreparedImage
 {
     int width = 0;
     int height = 0;
-    std::vector<float> rgba;
+    ncnn::Mat rgba;
 };
 
 struct EditRequest
 {
-    // File-backed fields are kept for the internal --request compatibility
-    // path.  Native --image requests fill the in-memory fields below.
+    // file-backed fields are kept for legacy requests
+    // native image requests fill the in-memory fields below
     bool native_inputs = false;
-    std::vector<int> input_ids_values;
-    std::vector<float> text_cos_values;
-    std::vector<float> text_sin_values;
-    std::vector<float> text_attention_values;
-    std::vector<float> image_mask_values;
-    std::vector<float> vision_patch_values;
-    std::vector<float> vision_pos_values;
-    std::vector<float> vision_cos_values;
-    std::vector<float> vision_sin_values;
+    ncnn::Mat input_ids_values;
+    ncnn::Mat text_cos_values;
+    ncnn::Mat text_sin_values;
+    ncnn::Mat text_attention_values;
+    ncnn::Mat image_mask_values;
+    ncnn::Mat vision_patch_values;
+    ncnn::Mat vision_pos_values;
+    ncnn::Mat vision_cos_values;
+    ncnn::Mat vision_sin_values;
     std::vector<EditPreparedImage> prepared_images;
 
     std::string output;
     std::string negative_prompt;
     bool has_negative_prompt = false;
     float guidance_scale = 1.f;
-    std::vector<int> negative_input_ids_values;
-    std::vector<float> negative_text_cos_values;
-    std::vector<float> negative_text_sin_values;
-    std::vector<float> negative_text_attention_values;
-    std::vector<float> negative_image_mask_values;
+    ncnn::Mat negative_input_ids_values;
+    ncnn::Mat negative_text_cos_values;
+    ncnn::Mat negative_text_sin_values;
+    ncnn::Mat negative_text_attention_values;
+    ncnn::Mat negative_image_mask_values;
     std::string input_ids;
     std::string text_cos;
     std::string text_sin;
@@ -49,8 +50,8 @@ struct EditRequest
     std::string vision_pos;
     std::string vision_cos;
     std::string vision_sin;
-    // The singular vae_rgba/condition_* fields are kept for old request files.
-    // New requests use one VAE tensor and size pair per reference image.
+    // the singular vae_rgba/condition_* fields are kept for old request files
+    // new requests use one vae tensor and size pair per reference image
     std::string vae_rgba;
     std::vector<std::string> vae_rgba_files;
     std::vector<int> condition_widths;

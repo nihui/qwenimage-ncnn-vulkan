@@ -81,9 +81,23 @@ https://github.com/QwenLM/Qwen-Image-2.1
 
 - Recommended: 32GB RAM, 16GB dedicated GPU with tensorcore/matrix hardware
 
-- VAE decoder tiling adapts automatically to the available GPU memory
+- Low-VRAM mode and VAE decoder tiling adapt automatically to the available GPU memory
 
 - CPU inference is available with `-g -1`
+
+Low-memory reference for text-to-image generation (RTX 3060, BF16, 2 steps):
+
+| Image resolution | Example VAE tile | Peak VRAM (MiB) |
+|---|---|---:|
+| 512x512 | 256x256 | 531.6 |
+| 1024x1024 | 256x256 | 1027.3 |
+| 1024x1024 | 512x512 | 1486.5 |
+| 2048x2048 | 512x512 | 3411.1 |
+| 2048x2048 | 1024x1024 | 4970.6 |
+
+These configurations illustrate operation with very limited available VRAM. Tile sizes are selected automatically from the current memory budget and may be larger when more memory is available. No manual low-VRAM or tile setting is required.
+
+The peaks are VRAM increments over the usage before the process starts. Allow additional GPU memory for the driver, desktop and other applications when choosing a graphics card.
 
 ### Example Command
 
