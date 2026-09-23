@@ -244,14 +244,26 @@ int main(int argc, char** argv)
             return 1;
         }
         config.vulkan_device_index = gpu_id;
-        fprintf(stderr, "using gpu-id = %d (%s)\n", gpu_id, ncnn::get_gpu_device(gpu_id)->info.device_name());
     }
     config.use_vulkan_compute = use_vulkan;
 
+    const int width = request.width > 0 ? request.width : 1024;
+    const int height = request.height > 0 ? request.height : 1024;
+    fprintf(stderr, "prompt = %s\n", request.prompt.c_str());
+    fprintf(stderr, "negative-prompt = %s\n", request.negative_prompt.c_str());
+    fprintf(stderr, "output-path = %s\n", request.output.c_str());
+    for (const std::string& image_path : image_paths)
+        fprintf(stderr, "input-image = %s\n", image_path.c_str());
+    fprintf(stderr, "model = %s\n", model_dir.c_str());
+    fprintf(stderr, "image-size = %d x %d\n", width, height);
+    fprintf(stderr, "steps = %d\n", request.steps);
+    fprintf(stderr, "seed = %llu\n", (unsigned long long)request.seed);
+    fprintf(stderr, "gpu-id = %d\n", gpu_id);
+    fprintf(stderr, "batch = %d\n", request.batch);
+    fprintf(stderr, "guidance-scale = %g\n", request.guidance_scale);
+
     if (image_edit)
     {
-        const int width = request.width > 0 ? request.width : 1024;
-        const int height = request.height > 0 ? request.height : 1024;
         EditRequest edit_request;
         std::string error;
         if (!prepare_native_edit_request(model_dir, image_paths, request.prompt, request.negative_prompt, request.guidance_scale > 1.f && request.has_negative_prompt, condition_resolution, width, height, request.steps, request.seed, request.output, edit_request, &error))
