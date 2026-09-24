@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 #include "mat.h"
@@ -42,6 +43,7 @@ struct RuntimeConfig
     // 0 disables host-backed weights, and 1 forces low-VRAM mode.
     int low_vram = -1;
     bool use_weights_in_host_memory = false;
+    bool use_kvcache_in_host_memory = false;
     bool use_local_pool_allocator = true;
     bool use_winograd_convolution = true;
 
@@ -57,10 +59,12 @@ struct RuntimeConfig
 
 RuntimeConfig normalize_runtime_config(RuntimeConfig config = {});
 
-// Resolve automatic low-VRAM mode for the requested output size.  The
-// decision is kept in RuntimeConfig so every lazily loaded stage gets the
-// same ncnn memory policy.
-void configure_auto_low_vram(RuntimeConfig& config, int width, int height);
+// resolve the transformer policy after releasing the preceding model stage
+bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int prefix_tokens, int negative_prefix_tokens, uint64_t transformer_weights);
+
+#if NCNN_VULKAN
+bool has_separate_host_heap(const ncnn::VulkanDevice* vkdev);
+#endif
 
 ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage);
 

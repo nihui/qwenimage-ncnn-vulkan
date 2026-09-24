@@ -81,11 +81,11 @@ https://github.com/QwenLM/Qwen-Image-2.1
 
 - Recommended: 32GB RAM, 16GB dedicated GPU with tensorcore/matrix hardware
 
-- Low-VRAM mode and VAE decoder tiling adapt automatically to the available GPU memory
+- Low-VRAM mode and VAE encoder/decoder tiling adapt automatically to the available GPU memory
 
 - CPU inference is available with `-g -1`
 
-Low-memory reference for text-to-image generation (RTX 3060, BF16, 2 steps):
+Earlier text-to-image memory measurements before prefix KV caching (RTX 3060, BF16, 2 steps):
 
 | Image resolution | Example VAE tile | Peak VRAM (MiB) |
 |---|---|---:|
@@ -95,9 +95,11 @@ Low-memory reference for text-to-image generation (RTX 3060, BF16, 2 steps):
 | 2048x2048 | 512x512 | 3411.1 |
 | 2048x2048 | 1024x1024 | 4970.6 |
 
-These configurations illustrate operation with very limited available VRAM. Tile sizes are selected automatically from the current memory budget and may be larger when more memory is available. No manual low-VRAM or tile setting is required.
+These historical measurements are examples, not current minimum VRAM guarantees. Current memory requirements also depend on prompt length and KV caches. Tile sizes are selected automatically from the current memory budget and may be larger when more memory is available. No manual low-VRAM or tile setting is required.
 
 The peaks are VRAM increments over the usage before the process starts. Allow additional GPU memory for the driver, desktop and other applications when choosing a graphics card.
+
+Image editing also accounts for reference image sizes and negative prompts when choosing its memory policy. When needed, reference KV caches are kept in system RAM and transferred one Transformer block at a time. More reference images require more system RAM and may take longer to process. VAE encoder and decoder tile sizes are selected independently. If the estimated Transformer workspace or full-image VAE attention cannot fit even with offloading and tiling, generation stops with an insufficient-memory error; reduce the output or reference image sizes, or use fewer references.
 
 ### Example Command
 

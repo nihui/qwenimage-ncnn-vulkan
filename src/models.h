@@ -21,6 +21,7 @@ struct ModelPaths
 };
 
 ModelPaths make_model_paths(const std::string& model_dir);
+bool get_transformer_weight_size(const ModelPaths& paths, uint64_t& bytes);
 bool validate_model_paths(const ModelPaths& paths, std::string* error = nullptr);
 bool validate_edit_model_paths(const ModelPaths& paths, std::string* error = nullptr);
 
@@ -50,6 +51,7 @@ struct QwenModelSet
     void unload_vae_encoder();
     void unload_vae_decoder();
     void unload_transformer();
+    void clear_transformer_workspace() const;
     void unload_all();
 
 #if NCNN_VULKAN

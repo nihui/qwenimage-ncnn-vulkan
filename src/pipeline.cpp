@@ -9,6 +9,7 @@
 #include <cstring>
 #include <random>
 #include <cstdio>
+#include <climits>
 
 #include "image_io.h"
 #include "scheduler.h"
@@ -97,7 +98,6 @@ bool QwenImagePipeline::load(const std::string& model_dir, RuntimeConfig config,
     text_config_.drop_system_tokens = drop_system_tokens_;
     pad_token_id_ = 151643;
 
-    configure_auto_low_vram(config_, width_, height_);
     loaded_ = true;
     return true;
 }
@@ -120,7 +120,6 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     }
     const int latent_width = width / 16;
     const int latent_height = height / 16;
-    configure_auto_low_vram(config_, width, height);
     models_.unload_all();
 
     if (request.batch > 1)
@@ -146,10 +145,8 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
         return std::string("<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n<|im_start|>user\n") + value + "<|im_end|>\n<|im_start|>assistant\n";
     };
 
-    auto encode_prompt = [&](const std::string& value, ncnn::Mat& embeds, int& valid_tokens) -> bool
+    auto encode_prompt = [&](const std::vector<int>& actual_ids, ncnn::Mat& embeds, int& valid_tokens) -> bool
     {
-        const std::string text = format_prompt(value);
-        const std::vector<int> actual_ids = tokenizer.encode(text);
         if (actual_ids.empty())
         {
             fprintf(stderr, "prompt tokenization failed\n");
@@ -181,6 +178,16 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     if (do_true_cfg)
         fprintf(stderr, "true_cfg_scale = %g\n", request.guidance_scale);
 
+    const std::vector<int> positive_ids = tokenizer.encode(format_prompt(request.prompt));
+    const std::vector<int> negative_ids = do_true_cfg ? tokenizer.encode(format_prompt(request.negative_prompt)) : std::vector<int>();
+    if (positive_ids.size() <= (size_t)drop_system_tokens_ || positive_ids.size() > INT_MAX || (do_true_cfg && (negative_ids.size() <= (size_t)drop_system_tokens_ || negative_ids.size() > INT_MAX)))
+        return false;
+    const int estimated_text_tokens = text_config_.dynamic_sequence ? (int)positive_ids.size() - drop_system_tokens_ : text_tokens_;
+    const int estimated_negative_tokens = do_true_cfg ? (text_config_.dynamic_sequence ? (int)negative_ids.size() - drop_system_tokens_ : text_tokens_) : 0;
+    uint64_t transformer_weights = 0;
+    if (!get_transformer_weight_size(paths_, transformer_weights) || !configure_auto_low_vram(config_, width, height, estimated_text_tokens, estimated_negative_tokens, transformer_weights))
+        return false;
+
     if (!models_.load_text_encoder(paths_, config_))
     {
         fprintf(stderr, "pipeline text encoder graph load failed\n");
@@ -191,9 +198,9 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     int valid_output_tokens = 0;
     int negative_valid_output_tokens = 0;
     const Clock::time_point text_begin = Clock::now();
-    bool text_ok = encode_prompt(request.prompt.empty() ? " " : request.prompt, text_embeds, valid_output_tokens);
+    bool text_ok = encode_prompt(positive_ids, text_embeds, valid_output_tokens);
     if (text_ok && do_true_cfg)
-        text_ok = encode_prompt(request.negative_prompt, negative_text_embeds, negative_valid_output_tokens);
+        text_ok = encode_prompt(negative_ids, negative_text_embeds, negative_valid_output_tokens);
     models_.unload_text_encoder();
     if (!text_ok)
     {
@@ -232,6 +239,9 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
         return false;
     }
 
+    if (!configure_auto_low_vram(config_, width, height, transformer_text_tokens, do_true_cfg ? negative_transformer_text_tokens : 0, transformer_weights))
+        return false;
+
     ncnn::Mat initial_latents;
     if (!request.rng_mat_path.empty())
     {
@@ -268,83 +278,100 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     std::vector<ncnn::Mat> batch_latents(request.batch);
     const Clock::time_point transformer_begin = Clock::now();
     bool transformer_ok = true;
-    for (int b = 0; b < request.batch && transformer_ok; b++)
     {
-        ncnn::Mat latents;
-        if (!initial_latents.empty())
-        {
-            latents = initial_latents.clone();
-            if (latents.empty())
-                return false;
-        }
-        else
-        {
-            latents.create(kLatentDim, image_tokens);
-            if (latents.empty())
-                return false;
-            std::mt19937 gen(static_cast<unsigned int>(request.seed + (uint64_t)b));
-            std::normal_distribution<float> dist(0.f, 1.f);
-            float* values = latents;
-            for (size_t i = 0; i < (size_t)image_tokens * kLatentDim; i++)
-                values[i] = dist(gen);
-        }
-
-        const std::string dump_prefix = request.dump_prefix.empty()
-            ? std::string()
-            : request.dump_prefix + (request.batch > 1 ? "-" + std::to_string(b) : "");
-        if (!dump_prefix.empty())
-            write_f32(dump_prefix + ".rng_initial.f32", latents);
-
         QwenTransformer positive_transformer(models_, config_, transformer_text_tokens, image_tokens);
         QwenTransformer negative_transformer(models_, config_, negative_transformer_text_tokens, image_tokens);
-        for (int z = 0; z < request.steps; z++)
+        transformer_ok = positive_transformer.prepare_text_to_image(text_embeds, cos, sin, mask, sigmas[0]);
+        if (!transformer_ok)
+            fprintf(stderr, "pipeline positive transformer prefix prefill failed\n");
+        if (transformer_ok && do_true_cfg)
         {
-            ncnn::Mat noise;
-            if (!positive_transformer.run(latents, text_embeds, sigmas[z], cos, sin, mask, noise))
+            transformer_ok = negative_transformer.prepare_text_to_image(negative_text_embeds, negative_cos, negative_sin, negative_mask, sigmas[0]);
+            if (!transformer_ok)
+                fprintf(stderr, "pipeline negative transformer prefix prefill failed\n");
+        }
+        for (int b = 0; b < request.batch && transformer_ok; b++)
+        {
+            ncnn::Mat latents;
+            if (!initial_latents.empty())
             {
-                fprintf(stderr, "pipeline transformer failed at step %d of image %d\n", z, b);
-                transformer_ok = false;
-                break;
-            }
-            if (do_true_cfg)
-            {
-                ncnn::Mat negative_noise;
-                if (!negative_transformer.run(latents, negative_text_embeds, sigmas[z], negative_cos, negative_sin, negative_mask, negative_noise) || negative_noise.w != noise.w || negative_noise.h != noise.h)
+                latents = initial_latents.clone();
+                if (latents.empty())
                 {
-                    fprintf(stderr, "pipeline negative transformer failed at step %d of image %d\n", z, b);
                     transformer_ok = false;
                     break;
                 }
-                for (size_t i = 0; i < (size_t)noise.w * noise.h; i++)
-                    noise[i] = negative_noise[i] + request.guidance_scale * (noise[i] - negative_noise[i]);
-            }
-
-            const float dt = sigmas[z + 1] - sigmas[z];
-            for (size_t i = 0; i < (size_t)latents.w * latents.h; i++)
-                latents[i] += dt * noise[i];
-            if (!dump_prefix.empty())
-            {
-                write_f32(dump_prefix + ".noise_step_" + std::to_string(z) + ".f32", noise);
-                if (z == 0)
-                {
-                    write_f32(dump_prefix + ".initial_latent.f32", latents);
-                    write_f32(dump_prefix + ".noise.f32", noise);
-                }
-            }
-            if (request.batch > 1)
-            {
-                fprintf(stderr, "step %d/%d of image %d/%d done\n", z + 1, request.steps, b + 1, request.batch);
             }
             else
             {
-                fprintf(stderr, "step %d/%d done\n", z + 1, request.steps);
+                latents.create(kLatentDim, image_tokens);
+                if (latents.empty())
+                {
+                    transformer_ok = false;
+                    break;
+                }
+                std::mt19937 gen(static_cast<unsigned int>(request.seed + (uint64_t)b));
+                std::normal_distribution<float> dist(0.f, 1.f);
+                float* values = latents;
+                for (size_t i = 0; i < (size_t)image_tokens * kLatentDim; i++)
+                    values[i] = dist(gen);
             }
-        }
-        if (transformer_ok)
-        {
+
+            const std::string dump_prefix = request.dump_prefix.empty()
+                ? std::string()
+                : request.dump_prefix + (request.batch > 1 ? "-" + std::to_string(b) : "");
             if (!dump_prefix.empty())
-                write_f32(dump_prefix + ".final_latent.f32", latents);
-            batch_latents[b] = std::move(latents);
+                write_f32(dump_prefix + ".rng_initial.f32", latents);
+
+            for (int z = 0; z < request.steps; z++)
+            {
+                ncnn::Mat noise;
+                if (!positive_transformer.run(latents, sigmas[z], noise))
+                {
+                    fprintf(stderr, "pipeline transformer failed at step %d of image %d\n", z, b);
+                    transformer_ok = false;
+                    break;
+                }
+                if (do_true_cfg)
+                {
+                    ncnn::Mat negative_noise;
+                    if (!negative_transformer.run(latents, sigmas[z], negative_noise) || negative_noise.w != noise.w || negative_noise.h != noise.h)
+                    {
+                        fprintf(stderr, "pipeline negative transformer failed at step %d of image %d\n", z, b);
+                        transformer_ok = false;
+                        break;
+                    }
+                    for (size_t i = 0; i < (size_t)noise.w * noise.h; i++)
+                        noise[i] = negative_noise[i] + request.guidance_scale * (noise[i] - negative_noise[i]);
+                }
+
+                const float dt = sigmas[z + 1] - sigmas[z];
+                for (size_t i = 0; i < (size_t)latents.w * latents.h; i++)
+                    latents[i] += dt * noise[i];
+                if (!dump_prefix.empty())
+                {
+                    write_f32(dump_prefix + ".noise_step_" + std::to_string(z) + ".f32", noise);
+                    if (z == 0)
+                    {
+                        write_f32(dump_prefix + ".initial_latent.f32", latents);
+                        write_f32(dump_prefix + ".noise.f32", noise);
+                    }
+                }
+                if (request.batch > 1)
+                {
+                    fprintf(stderr, "step %d/%d of image %d/%d done\n", z + 1, request.steps, b + 1, request.batch);
+                }
+                else
+                {
+                    fprintf(stderr, "step %d/%d done\n", z + 1, request.steps);
+                }
+            }
+            if (transformer_ok)
+            {
+                if (!dump_prefix.empty())
+                    write_f32(dump_prefix + ".final_latent.f32", latents);
+                batch_latents[b] = std::move(latents);
+            }
         }
     }
     models_.unload_transformer();

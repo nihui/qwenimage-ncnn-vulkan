@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <climits>
+#include <filesystem>
 #include <random>
 #include <cstdio>
 #include <vector>
@@ -152,7 +154,6 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         || request.drop_system_tokens < 0)
         return false;
 
-    configure_auto_low_vram(config_, request.width, request.height);
     models_.unload_all();
 
     if (request.batch > 1)
@@ -283,6 +284,28 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         || !valid_matrix(negative_text_attention, negative_full_tokens, negative_full_tokens) || !valid_matrix(negative_image_mask, 1, negative_full_tokens)))
         return false;
 
+    uint64_t condition_token_count = 0;
+    for (size_t i = 0; i < image_count; i++)
+        condition_token_count += (uint64_t)(condition_widths[i] / 16) * (condition_heights[i] / 16);
+    if (condition_token_count > (uint64_t)INT_MAX - std::max(full_tokens, negative_full_tokens))
+        return false;
+    const int condition_tokens = (int)condition_token_count;
+    int prefix_tokens = condition_tokens;
+    for (int i = request.drop_system_tokens; i < full_tokens; i++)
+        if (full_image_mask[i] == 0.f)
+            prefix_tokens++;
+    int negative_prefix_tokens = 0;
+    if (do_true_cfg)
+    {
+        negative_prefix_tokens = condition_tokens;
+        for (int i = request.drop_system_tokens; i < negative_full_tokens; i++)
+            if (negative_image_mask[i] == 0.f)
+                negative_prefix_tokens++;
+    }
+    uint64_t transformer_weights = 0;
+    if (!get_transformer_weight_size(paths_, transformer_weights) || !configure_auto_low_vram(config_, request.width, request.height, prefix_tokens, negative_prefix_tokens, transformer_weights))
+        return false;
+
     if (!models_.load_vision_encoder(paths_, config_))
     {
         fprintf(stderr, "edit vision encoder graph load failed\n");
@@ -366,12 +389,12 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         fprintf(stderr, "edit VAE encoder graph load failed\n");
         return false;
     }
-    int condition_tokens = 0;
-    for (size_t i = 0; i < image_count; i++)
-        condition_tokens += (condition_widths[i] / 16) * (condition_heights[i] / 16);
     ncnn::Mat condition_latents(kLatent, condition_tokens);
     if (condition_latents.empty())
+    {
+        models_.unload_vae_encoder();
         return false;
+    }
     int condition_offset = 0;
     std::vector<TransformerImageShape> image_shapes;
     const Clock::time_point vae_encode_begin = Clock::now();
@@ -415,6 +438,8 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         return false;
 
     image_shapes.push_back({target_h, target_w});
+    if (!configure_auto_low_vram(config_, request.width, request.height, prefix_tokens, negative_prefix_tokens, transformer_weights))
+        return false;
     if (!models_.load_transformer(paths_, config_))
     {
         fprintf(stderr, "edit transformer graph load failed\n");
@@ -427,13 +452,23 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
     {
         QwenTransformer positive_transformer(models_, config_, text_tokens, target_tokens);
         QwenTransformer negative_transformer(models_, config_, negative_text_tokens, target_tokens);
-        if (!positive_transformer.prepare_edit(condition_latents, text, text_slots, image_shapes) || (do_true_cfg && !negative_transformer.prepare_edit(condition_latents, negative_text, negative_text_slots, image_shapes)))
-            return false;
+        transformer_ok = positive_transformer.prepare_edit(condition_latents, text, text_slots, image_shapes, sigmas[0]);
+        if (!transformer_ok)
+            fprintf(stderr, "edit positive transformer prefix prefill failed\n");
+        if (transformer_ok && do_true_cfg)
+        {
+            transformer_ok = negative_transformer.prepare_edit(condition_latents, negative_text, negative_text_slots, image_shapes, sigmas[0]);
+            if (!transformer_ok)
+                fprintf(stderr, "edit negative transformer prefix prefill failed\n");
+        }
         for (int b = 0; b < request.batch && transformer_ok; b++)
         {
             ncnn::Mat target_latents(kLatent, target_tokens);
             if (target_latents.empty())
-                return false;
+            {
+                transformer_ok = false;
+                break;
+            }
             std::mt19937 gen(static_cast<unsigned int>(request.seed + (uint64_t)b));
             std::normal_distribution<float> dist(0.f, 1.f);
             float* values = target_latents;

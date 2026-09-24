@@ -6,8 +6,13 @@
 
 namespace qwenimage {
 
-// decoder tile size in pixels, available memory in bytes
+// bf16 decoder tile size in pixels, available memory in bytes after estimated resident vae weights
+// checks both the full-resolution bottleneck and reconstruction tiles before inference
 bool get_optimal_vae_tile_size(int width, int height, uint64_t available_memory, int& tile_width, int& tile_height);
+
+// bf16 encoder frontend tile size in pixels, available memory in bytes after estimated resident vae weights
+// returns false when either local tiles or the full-resolution latent attention cannot fit
+bool get_optimal_vae_encoder_tile_size(int width, int height, uint64_t available_memory, int& tile_width, int& tile_height);
 
 class QwenVaeEncoder
 {
