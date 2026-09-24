@@ -121,6 +121,12 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     const int latent_width = width / 16;
     const int latent_height = height / 16;
     models_.unload_all();
+    if (!initialize_memory_budget(config_))
+        return false;
+    const uint64_t image_token_count = (uint64_t)latent_width * latent_height;
+    if (image_token_count > INT_MAX)
+        return false;
+    const int image_tokens = (int)image_token_count;
 
     if (request.batch > 1)
     {
@@ -182,10 +188,10 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     const std::vector<int> negative_ids = do_true_cfg ? tokenizer.encode(format_prompt(request.negative_prompt)) : std::vector<int>();
     if (positive_ids.size() <= (size_t)drop_system_tokens_ || positive_ids.size() > INT_MAX || (do_true_cfg && (negative_ids.size() <= (size_t)drop_system_tokens_ || negative_ids.size() > INT_MAX)))
         return false;
-    const int estimated_text_tokens = text_config_.dynamic_sequence ? (int)positive_ids.size() - drop_system_tokens_ : text_tokens_;
-    const int estimated_negative_tokens = do_true_cfg ? (text_config_.dynamic_sequence ? (int)negative_ids.size() - drop_system_tokens_ : text_tokens_) : 0;
+    const int prefix_tokens = text_config_.dynamic_sequence ? (int)positive_ids.size() - drop_system_tokens_ : text_tokens_;
+    const int negative_prefix_tokens = do_true_cfg ? (text_config_.dynamic_sequence ? (int)negative_ids.size() - drop_system_tokens_ : text_tokens_) : 0;
     uint64_t transformer_weights = 0;
-    if (!get_transformer_weight_size(paths_, transformer_weights) || !configure_auto_low_vram(config_, width, height, estimated_text_tokens, estimated_negative_tokens, transformer_weights))
+    if (!get_transformer_weight_size(paths_, transformer_weights) || !configure_auto_low_vram(config_, width, height, prefix_tokens, negative_prefix_tokens, transformer_weights))
         return false;
 
     if (!models_.load_text_encoder(paths_, config_))
@@ -216,14 +222,14 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
                       negative_text_embeds);
     }
 
-    const int image_tokens = latent_height * latent_width;
     const int transformer_text_tokens = text_config_.dynamic_sequence
         ? valid_output_tokens : text_tokens_;
     const int negative_transformer_text_tokens = do_true_cfg
         ? (text_config_.dynamic_sequence ? negative_valid_output_tokens
                                          : text_tokens_)
         : transformer_text_tokens;
-    if (transformer_text_tokens <= 0
+    if (transformer_text_tokens != prefix_tokens
+        || (do_true_cfg && negative_transformer_text_tokens != negative_prefix_tokens)
         || ((size_t)text_embeds.w * text_embeds.h) !=
            (size_t)transformer_text_tokens * kTextDim
         || (do_true_cfg
@@ -238,9 +244,6 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
                 negative_transformer_text_tokens, ((size_t)negative_text_embeds.w * negative_text_embeds.h));
         return false;
     }
-
-    if (!configure_auto_low_vram(config_, width, height, transformer_text_tokens, do_true_cfg ? negative_transformer_text_tokens : 0, transformer_weights))
-        return false;
 
     ncnn::Mat initial_latents;
     if (!request.rng_mat_path.empty())

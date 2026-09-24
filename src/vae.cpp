@@ -65,10 +65,10 @@ bool crop_mat(const ncnn::Mat& source, int top, int bottom, int left, int right,
 }
 
 #if NCNN_VULKAN
-uint64_t get_available_vae_memory(const ncnn::Net& net, bool encoder = false)
+uint64_t get_available_vae_memory(const ncnn::Net& net, const RuntimeConfig& config, bool encoder = false)
 {
     const ncnn::VulkanDevice* vkdev = net.vulkan_device();
-    const uint64_t budget = (uint64_t)vkdev->get_heap_budget() * 1024 * 1024;
+    const uint64_t budget = get_gpu_memory_budget(config, vkdev);
     // heap budget includes this process, so subtract its estimated resident vae weights
     // measured bf16 encoder weights use 154 mib and decoder weights use 494 mib
     // host weights on a shared heap still count against the same budget
@@ -266,7 +266,7 @@ bool process_vae_encoder(const ncnn::Net& net, const RuntimeConfig& config, cons
 #if NCNN_VULKAN
     if (workspace.blob)
     {
-        const uint64_t available_memory = get_available_vae_memory(net, true);
+        const uint64_t available_memory = get_available_vae_memory(net, config, true);
         if (automatic ? !get_optimal_vae_encoder_tile_size(width, height, available_memory, tile_width, tile_height) : !vae_tiles_fit(width, height, tile_width, tile_height, available_memory, true))
         {
             fprintf(stderr, "vae encoder local tiles or global attention cannot fit available gpu memory\n");
@@ -311,7 +311,7 @@ bool process_vae_encoder(const ncnn::Net& net, const RuntimeConfig& config, cons
     // release the frontend gpu workspace before allocating the full latent attention workspace
     workspace.clear();
 #if NCNN_VULKAN
-    if (workspace.blob && !vae_global_workspace_fits(width, height, get_available_vae_memory(net, true)))
+    if (workspace.blob && !vae_global_workspace_fits(width, height, get_available_vae_memory(net, config, true)))
     {
         fprintf(stderr, "vae encoder global attention cannot fit available gpu memory\n");
         return false;
@@ -333,7 +333,7 @@ bool process_vae_decoder(const ncnn::Net& net, const RuntimeConfig& config, Mode
 #if NCNN_VULKAN
     if (workspace.blob)
     {
-        const uint64_t available_memory = get_available_vae_memory(net);
+        const uint64_t available_memory = get_available_vae_memory(net, config);
         if (automatic ? !get_optimal_vae_tile_size(width, height, available_memory, tile_width, tile_height) : !vae_tiles_fit(width, height, tile_width, tile_height, available_memory, false))
         {
             fprintf(stderr, "vae decoder tiles or global attention cannot fit available gpu memory\n");
@@ -357,11 +357,11 @@ bool process_vae_decoder(const ncnn::Net& net, const RuntimeConfig& config, Mode
         return false;
     workspace.clear();
 
-    // refresh the budget after freeing the full-resolution bottleneck workspace
+    // select reconstruction tiles after freeing the full-resolution bottleneck workspace
 #if NCNN_VULKAN
     if (workspace.blob)
     {
-        const uint64_t available_memory = get_available_vae_memory(net);
+        const uint64_t available_memory = get_available_vae_memory(net, config);
         if (automatic ? !get_optimal_vae_tile_size(width, height, available_memory, tile_width, tile_height) : !vae_tiles_fit(width, height, tile_width, tile_height, available_memory, false))
         {
             fprintf(stderr, "vae decoder tile cannot fit available gpu memory\n");

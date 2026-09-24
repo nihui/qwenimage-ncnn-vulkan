@@ -81,7 +81,7 @@ https://github.com/QwenLM/Qwen-Image-2.1
 
 - Recommended: 32GB RAM, 16GB dedicated GPU with tensorcore/matrix hardware
 
-- Low-VRAM mode and VAE encoder/decoder tiling adapt automatically to the available GPU memory
+- Low-VRAM mode and VAE encoder/decoder tiling adapt automatically to the available GPU memory at the start of each generation
 
 - CPU inference is available with `-g -1`
 

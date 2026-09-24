@@ -155,6 +155,11 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         return false;
 
     models_.unload_all();
+    if (!initialize_memory_budget(config_))
+        return false;
+    const uint64_t target_token_count = (uint64_t)(request.width / 16) * (request.height / 16);
+    if (target_token_count > INT_MAX)
+        return false;
 
     if (request.batch > 1)
     {
@@ -429,7 +434,7 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
 
     const int target_h = request.height / 16;
     const int target_w = request.width / 16;
-    const int target_tokens = target_h * target_w;
+    const int target_tokens = (int)target_token_count;
     int expected_image_slots = 0;
     for (const TransformerImageShape& shape : image_shapes)
         expected_image_slots += shape.height * shape.width / 4;
@@ -438,8 +443,6 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         return false;
 
     image_shapes.push_back({target_h, target_w});
-    if (!configure_auto_low_vram(config_, request.width, request.height, prefix_tokens, negative_prefix_tokens, transformer_weights))
-        return false;
     if (!models_.load_transformer(paths_, config_))
     {
         fprintf(stderr, "edit transformer graph load failed\n");

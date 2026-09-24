@@ -19,7 +19,33 @@ RuntimeConfig normalize_runtime_config(RuntimeConfig config)
     return config;
 }
 
+bool initialize_memory_budget(RuntimeConfig& config)
+{
+    config.use_weights_in_host_memory = config.low_vram > 0;
+    config.use_kvcache_in_host_memory = false;
+    config.gpu_memory_budget = UINT64_MAX;
 #if NCNN_VULKAN
+    if (config.use_vulkan_compute)
+    {
+        if (ncnn::get_gpu_count() == 0)
+            return false;
+        int device = config.vulkan_device_index;
+        if (device < 0 || device >= ncnn::get_gpu_count())
+            device = ncnn::get_default_gpu_index();
+        config.gpu_memory_budget = (uint64_t)ncnn::get_gpu_device(device)->get_heap_budget() * 1024 * 1024;
+    }
+#endif
+    return true;
+}
+
+#if NCNN_VULKAN
+uint64_t get_gpu_memory_budget(const RuntimeConfig& config, const ncnn::VulkanDevice* vkdev)
+{
+    if (config.gpu_memory_budget != UINT64_MAX)
+        return config.gpu_memory_budget;
+    return (uint64_t)vkdev->get_heap_budget() * 1024 * 1024;
+}
+
 bool has_separate_host_heap(const ncnn::VulkanDevice* vkdev)
 {
     const VkPhysicalDeviceMemoryProperties& properties = vkdev->info.physicalDeviceMemoryProperties();
@@ -85,7 +111,7 @@ bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int p
         device = ncnn::get_default_gpu_index();
     const ncnn::VulkanDevice* vkdev = ncnn::get_gpu_device(device);
     const uint64_t mib = 1024 * 1024;
-    const uint64_t budget = (uint64_t)vkdev->get_heap_budget() * mib;
+    const uint64_t budget = get_gpu_memory_budget(config, vkdev);
     const uint64_t both_prefixes = (uint64_t)prefix_tokens + negative_prefix_tokens;
     const uint64_t branches = negative_prefix_tokens > 0 ? 2 : 1;
     const uint64_t hidden_row = 4096 * 2;
@@ -136,7 +162,7 @@ ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage)
     option.use_bf16_packed = config.use_bf16_packed;
     option.use_packing_layout = config.use_packing_layout;
     option.use_local_pool_allocator = config.use_local_pool_allocator;
-    option.use_weights_in_host_memory = config.use_weights_in_host_memory;
+    option.use_weights_in_host_memory = stage == ModelStage::Transformer ? config.use_weights_in_host_memory : config.low_vram > 0;
     option.use_mapped_model_loading = true;
     option.use_winograd_convolution = config.use_winograd_convolution;
     option.use_cooperative_matrix = true;
@@ -145,10 +171,7 @@ ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage)
 
     if (stage == ModelStage::VaeEncoder || stage == ModelStage::VaeDecoder)
     {
-        // Keep host-backed weights in automatic low-VRAM mode.  Winograd is
-        // disabled for the VAE because it creates a large temporary workspace.
-        if (!config.use_weights_in_host_memory)
-            option.use_weights_in_host_memory = false;
+        // winograd creates a large temporary workspace for the vae
         option.use_winograd_convolution = false;
     }
 
@@ -175,7 +198,7 @@ bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& conf
             return false;
         const uint64_t mib = 1024 * 1024;
         const uint64_t reserve = 384 * mib;
-        const uint64_t budget = (uint64_t)vkdev->get_heap_budget() * mib;
+        const uint64_t budget = get_gpu_memory_budget(config, vkdev);
         if (config.low_vram < 0 && (weights > budget || reserve > budget - weights))
             net.opt.use_weights_in_host_memory = true;
         const uint64_t resident_weights = net.opt.use_weights_in_host_memory && has_separate_host_heap(vkdev) ? 0 : weights;
