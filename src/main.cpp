@@ -4,41 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
+#include <limits.h>
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <vector>
-
-#if _WIN32
-static char* optarg = NULL;
-static int optind = 1;
-static int getopt(int argc, char* const argv[], const char* optstring)
-{
-    if (optind >= argc || argv[optind][0] != '-')
-        return -1;
-
-    char opt = argv[optind][1];
-    const char* p = strchr(optstring, opt);
-    if (p == NULL)
-        return '?';
-
-    optarg = NULL;
-
-    if (p[1] == ':')
-    {
-        optind++;
-        if (optind >= argc)
-            return '?';
-
-        optarg = argv[optind];
-    }
-
-    optind++;
-
-    return opt;
-}
-#else // _WIN32
-#include <unistd.h> // getopt()
-#endif // _WIN32
 
 #include "gpu.h"
 #include "edit_pipeline.h"
@@ -49,6 +21,32 @@ static int getopt(int argc, char* const argv[], const char* optstring)
 using namespace qwenimage;
 
 namespace {
+
+static bool parse_int_option(const char* text, int& value)
+{
+    if (!text || !*text)
+        return false;
+    errno = 0;
+    char* end = NULL;
+    const long parsed = strtol(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != 0 || parsed < INT_MIN || parsed > INT_MAX)
+        return false;
+    value = (int)parsed;
+    return true;
+}
+
+static bool parse_seed_option(const char* text, uint64_t& value)
+{
+    if (!text || !*text || *text == '-')
+        return false;
+    errno = 0;
+    char* end = NULL;
+    const unsigned long long parsed = strtoull(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != 0 || parsed > UINT64_MAX)
+        return false;
+    value = (uint64_t)parsed;
+    return true;
+}
 
 static bool parse_image_size(const char* text, int& width, int& height)
 {
@@ -88,6 +86,11 @@ static void print_help()
     fprintf(stdout, "  -m model-path        qwen-image model path (default=models/qwenimage21)\n");
     fprintf(stdout, "  -g gpu-id            GPU device to use (-1=cpu, default=auto)\n");
     fprintf(stdout, "  -b batch-size        batched generation (default=1)\n");
+    fprintf(stdout, "  --lora path          safetensors LoRA or Qwen Fun Acc adapter (optional)\n");
+    fprintf(stdout, "  --lora-scale value   LoRA strength (default=1.0)\n");
+    fprintf(stdout, "  -c control-image     ControlNet condition image (optional)\n");
+    fprintf(stdout, "  --controlnet path    ControlNet ncnn param file (optional)\n");
+    fprintf(stdout, "  --control-scale val  ControlNet strength (default=1.0)\n");
 }
 
 static void print_saved_paths(const std::string& output, int batch)
@@ -119,17 +122,89 @@ int main(int argc, char** argv)
 {
     std::string model_dir;
     std::vector<std::string> image_paths;
-    const int condition_resolution = 1024;
     GenerateRequest request;
     request.output = "out.png";
     RuntimeConfig config;
     const int gpu_id_auto = 233;
     int gpu_id = gpu_id_auto;
 
-    int opt;
-    while ((opt = getopt(argc, argv, "p:n:w:o:i:s:l:r:m:g:b:h")) != -1)
+    std::string lora_path;
+    float lora_scale = 1.f;
+    std::string control_image_path;
+    std::string controlnet_path;
+    float control_scale = 1.f;
+    auto get_value = [&](int& index, const char* option) -> const char* {
+        if (index + 1 >= argc)
+        {
+            fprintf(stderr, "missing value for %s\n", option);
+            return NULL;
+        }
+        return argv[++index];
+    };
+    for (int i = 1; i < argc; i++)
     {
-        switch (opt)
+        const char* arg = argv[i];
+        if (strcmp(arg, "--lora") == 0)
+        {
+            const char* value = get_value(i, arg);
+            if (!value) return 2;
+            lora_path = value;
+            continue;
+        }
+        if (strcmp(arg, "--lora-scale") == 0)
+        {
+            const char* value = get_value(i, arg);
+            if (!value) return 2;
+            char* end = NULL;
+            lora_scale = strtof(value, &end);
+            if (end == value || *end != 0 || !std::isfinite(lora_scale))
+            {
+                fprintf(stderr, "invalid LoRA scale: %s\n", value);
+                return 2;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--controlnet") == 0)
+        {
+            const char* value = get_value(i, arg);
+            if (!value) return 2;
+            controlnet_path = value;
+            continue;
+        }
+        if (strcmp(arg, "--control-scale") == 0)
+        {
+            const char* value = get_value(i, arg);
+            if (!value) return 2;
+            char* end = NULL;
+            control_scale = strtof(value, &end);
+            if (end == value || *end != 0 || !std::isfinite(control_scale))
+            {
+                fprintf(stderr, "invalid ControlNet scale: %s\n", value);
+                return 2;
+            }
+            continue;
+        }
+        if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0)
+        {
+            print_help();
+            return 0;
+        }
+        if (arg[0] != '-' || arg[1] == 0 || arg[1] == '-')
+        {
+            fprintf(stderr, "unknown option: %s\n", arg);
+            print_help();
+            return 2;
+        }
+
+        const char option[3] = {'-', arg[1], 0};
+        const char* optarg = arg[2] ? arg + 2 : NULL;
+        if (optarg && optarg[0] == '=') optarg++;
+        if (arg[1] != 'h' && !optarg)
+        {
+            optarg = get_value(i, option);
+            if (!optarg) return 2;
+        }
+        switch (arg[1])
         {
         case 'p':
             request.prompt = optarg;
@@ -142,7 +217,7 @@ int main(int argc, char** argv)
         {
             char* end = NULL;
             const float scale = strtof(optarg, &end);
-            if (end == optarg || *end != 0 || !(scale >= 0.f))
+            if (end == optarg || *end != 0 || !std::isfinite(scale) || !(scale >= 0.f))
             {
                 fprintf(stderr, "invalid guidance-scale: %s\n", optarg);
                 return 2;
@@ -156,6 +231,9 @@ int main(int argc, char** argv)
         case 'i':
             image_paths.emplace_back(optarg);
             break;
+        case 'c':
+            control_image_path = optarg;
+            break;
         case 's':
             if (!parse_image_size(optarg, request.width, request.height))
             {
@@ -164,25 +242,32 @@ int main(int argc, char** argv)
             }
             break;
         case 'l':
-            request.steps = atoi(optarg);
+            if (!parse_int_option(optarg, request.steps) || request.steps <= 0)
+            {
+                fprintf(stderr, "invalid steps: %s\n", optarg);
+                return 2;
+            }
+            request.steps_explicit = true;
             break;
         case 'r':
-            request.seed = (uint64_t)strtoull(optarg, NULL, 10);
+            if (!parse_seed_option(optarg, request.seed))
+            {
+                fprintf(stderr, "invalid random-seed: %s\n", optarg);
+                return 2;
+            }
             break;
         case 'm':
             model_dir = optarg;
             break;
         case 'g':
-            gpu_id = atoi(optarg);
-            if (gpu_id < -1)
+            if (!parse_int_option(optarg, gpu_id) || gpu_id < -1)
             {
                 fprintf(stderr, "invalid gpu-id: %s\n", optarg);
                 return 2;
             }
             break;
         case 'b':
-            request.batch = atoi(optarg);
-            if (request.batch <= 0)
+            if (!parse_int_option(optarg, request.batch) || request.batch <= 0)
             {
                 fprintf(stderr, "invalid batch-size: %s\n", optarg);
                 return 2;
@@ -192,8 +277,37 @@ int main(int argc, char** argv)
             print_help();
             return 0;
         default:
+            fprintf(stderr, "unknown option: %s\n", option);
             print_help();
             return 2;
+        }
+    }
+    request.lora_path = lora_path;
+    request.lora_scale = lora_scale;
+    request.control_image_path = control_image_path;
+    request.controlnet_path = controlnet_path;
+    request.control_scale = control_scale;
+    if (control_image_path.empty() != controlnet_path.empty())
+    {
+        fprintf(stderr, "-c control-image and --controlnet must be specified together\n");
+        return 2;
+    }
+    if (!lora_path.empty())
+    {
+        TransformerLoRA adapter(lora_path, lora_scale);
+        if (!adapter.valid())
+        {
+            fprintf(stderr, "failed to load LoRA %s: %s\n", lora_path.c_str(), adapter.error().c_str());
+            return 2;
+        }
+        if (adapter.has_pdd_output())
+        {
+            if (request.steps_explicit && request.steps != adapter.required_steps())
+            {
+                fprintf(stderr, "this PDD LoRA requires exactly %d steps\n", adapter.required_steps());
+                return 2;
+            }
+            request.steps = adapter.required_steps();
         }
     }
 
@@ -251,6 +365,8 @@ int main(int argc, char** argv)
 
     const int width = request.width > 0 ? request.width : 1024;
     const int height = request.height > 0 ? request.height : 1024;
+    // use the longest output side as the reference-image resolution
+    const int condition_resolution = std::max(width, height);
     fprintf(stderr, "prompt = %s\n", request.prompt.c_str());
     fprintf(stderr, "negative-prompt = %s\n", request.negative_prompt.c_str());
     fprintf(stderr, "output-path = %s\n", request.output.c_str());
@@ -263,6 +379,9 @@ int main(int argc, char** argv)
     fprintf(stderr, "gpu-id = %d\n", gpu_id);
     fprintf(stderr, "batch = %d\n", request.batch);
     fprintf(stderr, "guidance-scale = %g\n", request.guidance_scale);
+    if (!lora_path.empty()) fprintf(stderr, "lora = %s (scale=%g)\n", lora_path.c_str(), lora_scale);
+    if (!control_image_path.empty()) fprintf(stderr, "control-image = %s\n", control_image_path.c_str());
+    if (!controlnet_path.empty()) fprintf(stderr, "controlnet = %s (scale=%g)\n", controlnet_path.c_str(), control_scale);
 
     int ret = 0;
     if (image_edit)
@@ -277,6 +396,12 @@ int main(int argc, char** argv)
         else
         {
             edit_request.guidance_scale = request.guidance_scale;
+            edit_request.steps_explicit = request.steps_explicit;
+            edit_request.lora_path = request.lora_path;
+            edit_request.lora_scale = request.lora_scale;
+            edit_request.control_image_path = request.control_image_path;
+            edit_request.controlnet_path = request.controlnet_path;
+            edit_request.control_scale = request.control_scale;
             edit_request.batch = request.batch;
 
             QwenImageEditPipeline pipeline;

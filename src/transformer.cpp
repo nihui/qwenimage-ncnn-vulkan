@@ -44,6 +44,39 @@ void make_axis(double position, int dim, float* cos, float* sin)
     }
 }
 
+bool make_joint_modulation(const ncnn::Mat& source, int prefix_rows, int target_rows, std::array<ncnn::Mat, 4>& expanded)
+{
+    const int rows = prefix_rows + target_rows;
+    if (source.dims != 2 || source.w != kModulationDim || source.h != 2 || source.elempack != 1 || source.elembits() != 32 || prefix_rows <= 0 || target_rows <= 0)
+        return false;
+    for (int part = 0; part < 4; part++)
+    {
+        expanded[part].create(kHiddenDim, rows);
+        if (expanded[part].empty())
+            return false;
+        for (int row = 0; row < prefix_rows; row++)
+            std::memcpy(expanded[part].row(row), source.row(1) + (size_t)part * kHiddenDim, (size_t)kHiddenDim * sizeof(float));
+        for (int row = 0; row < target_rows; row++)
+            std::memcpy(expanded[part].row(prefix_rows + row), source.row(0) + (size_t)part * kHiddenDim, (size_t)kHiddenDim * sizeof(float));
+    }
+    return true;
+}
+
+bool make_joint_hidden(const ncnn::Mat& prefix, const ncnn::Mat& target, ncnn::Mat& joint)
+{
+    if (!valid_hidden(prefix, prefix.h) || !valid_hidden(target, target.h)
+        || prefix.elembits() != 32 || target.elembits() != 32 || prefix.elempack != 1 || target.elempack != 1)
+        return false;
+    joint.create(kHiddenDim, prefix.h + target.h);
+    if (joint.empty())
+        return false;
+    for (int i = 0; i < prefix.h; i++)
+        std::memcpy(joint.row(i), prefix.row(i), (size_t)kHiddenDim * sizeof(float));
+    for (int i = 0; i < target.h; i++)
+        std::memcpy(joint.row(prefix.h + i), target.row(i), (size_t)kHiddenDim * sizeof(float));
+    return true;
+}
+
 bool make_modulation_rows(const ncnn::Mat& source, int source_row, int rows, std::array<ncnn::Mat, 4>& expanded)
 {
     if (source.dims != 2 || source.w != kModulationDim || source.h != 2 || source.elempack != 1 || source.elembits() != 32 || source_row < 0 || source_row >= source.h || rows <= 0)
@@ -340,9 +373,10 @@ bool QwenTransformer::initialize_block_blobs()
         b.cache_v_in = find_blob(p + "_cache_v_in");
         b.cache_k_out = find_blob(p + "_cache_k_out");
         b.cache_v_out = find_blob(p + "_cache_v_out");
+        const bool controlnet = models_.transformer_controlnet != nullptr;
         if (b.residual < 0 || b.normalized < 0 || b.output < 0 || b.mask < 0
             || b.cos_q < 0 || b.cos_k < 0 || b.sin_q < 0 || b.sin_k < 0
-            || b.cache_k_in < 0 || b.cache_v_in < 0 || b.cache_k_out < 0 || b.cache_v_out < 0
+            || (!controlnet && (b.cache_k_in < 0 || b.cache_v_in < 0 || b.cache_k_out < 0 || b.cache_v_out < 0))
             || b.modulation[0] < 0 || b.modulation[1] < 0 || b.modulation[2] < 0 || b.modulation[3] < 0)
         {
             fprintf(stderr, "transformer block %02d blob map invalid: residual=%d normalized=%d mod=%d,%d,%d,%d rope=%d,%d,%d,%d mask=%d output=%d cache=%d,%d,%d,%d\n",
@@ -350,25 +384,87 @@ bool QwenTransformer::initialize_block_blobs()
             return false;
         }
     }
+    if (models_.transformer_controlnet)
+    {
+        const std::vector<ncnn::Blob>& control_blobs = models_.transformer_controlnet->blobs();
+        auto find_control_blob = [&](const std::string& name) {
+            for (size_t i = 0; i < control_blobs.size(); i++)
+                if (control_blobs[i].name == name)
+                    return (int)i;
+            return -1;
+        };
+        control_net_blobs_.image_input = find_control_blob("control_context");
+        control_net_blobs_.image_output = find_control_blob("control_image_features");
+        control_net_blobs_.before_input = find_control_blob("control_joint");
+        control_net_blobs_.before_output = find_control_blob("control_before_output");
+        control_net_blobs_.rope_cos = find_control_blob("control_rope_cos");
+        control_net_blobs_.rope_sin = find_control_blob("control_rope_sin");
+        control_net_blobs_.mask = find_control_blob("control_mask");
+        const char* const mod_suffixes[4] = {"10", "11", "86", "87"};
+        for (int i = 0; i < 16; i++)
+        {
+            char prefix[16];
+            char name[64];
+            std::snprintf(prefix, sizeof(prefix), "c%02d", i);
+            control_net_blobs_.hidden[i] = find_control_blob(std::string(prefix) + "_hidden");
+            control_net_blobs_.output[i] = find_control_blob(std::string(prefix) + "_state");
+            std::snprintf(name, sizeof(name), "control_after_%02d_output", i);
+            control_net_blobs_.after_output[i] = find_control_blob(name);
+            for (int j = 0; j < 4; j++)
+                control_net_blobs_.modulation[i][j] = find_control_blob(std::string(prefix) + "_" + mod_suffixes[j]);
+        }
+        if (control_net_blobs_.image_input < 0 || control_net_blobs_.image_output < 0
+            || control_net_blobs_.before_input < 0 || control_net_blobs_.before_output < 0
+            || control_net_blobs_.rope_cos < 0 || control_net_blobs_.rope_sin < 0
+            || control_net_blobs_.mask < 0)
+            return false;
+        for (int i = 0; i < 16; i++)
+        {
+            if (control_net_blobs_.hidden[i] < 0 || control_net_blobs_.output[i] < 0
+                || control_net_blobs_.after_output[i] < 0)
+                return false;
+            for (int j = 0; j < 4; j++)
+                if (control_net_blobs_.modulation[i][j] < 0)
+                    return false;
+        }
+
+        control_blobs_.before_input = find_blob("control_before_input");
+        control_blobs_.base_input = find_blob("control_base_input");
+        control_blobs_.add_before_output = find_blob("control_add_before_output");
+        for (int i = 0; i < 16; i++)
+        {
+            char name[64];
+            std::snprintf(name, sizeof(name), "control_after_%02d_input", i);
+            control_blobs_.after_input[i] = find_blob(name);
+            std::snprintf(name, sizeof(name), "control_add_%02d_output", i);
+            control_blobs_.add_output[i] = find_blob(name);
+        }
+        if (control_blobs_.before_input < 0 || control_blobs_.base_input < 0
+            || control_blobs_.add_before_output < 0)
+            return false;
+        for (int i = 0; i < 16; i++)
+            if (control_blobs_.after_input[i] < 0 || control_blobs_.add_output[i] < 0)
+                return false;
+    }
     return true;
 }
 
-bool QwenTransformer::project_text(const ncnn::Mat& text, ncnn::Mat& projected) const
+bool QwenTransformer::project_text(const ncnn::Mat& text, ncnn::Mat& projected, int output_type) const
 {
     if (!models_.transformer_input || !is_matrix(text, kHiddenDim, text_tokens_))
         return false;
     ncnn::Extractor ex = models_.transformer_input->create_extractor();
-    if (ex.input("in1", text) != 0 || ex.extract("9", projected, 1) != 0)
+    if (ex.input("in1", text) != 0 || ex.extract("9", projected, output_type) != 0)
         return false;
     return valid_hidden(projected, text_tokens_);
 }
 
-bool QwenTransformer::project_latents(const ncnn::Mat& latents, ncnn::Mat& projected) const
+bool QwenTransformer::project_latents(const ncnn::Mat& latents, ncnn::Mat& projected, int output_type) const
 {
     if (!models_.transformer_input || !is_matrix(latents, kLatentDim, latents.h))
         return false;
     ncnn::Extractor ex = models_.transformer_input->create_extractor();
-    if (ex.input("in0", latents) != 0 || ex.extract("5", projected, 1) != 0)
+    if (ex.input("in0", latents) != 0 || ex.extract("5", projected, output_type) != 0)
         return false;
     return valid_hidden(projected, latents.h);
 }
@@ -455,14 +551,171 @@ bool QwenTransformer::prepare_prefix(const ncnn::Mat& hidden, const ncnn::Mat& m
     return true;
 }
 
-bool QwenTransformer::prepare_text_to_image(const ncnn::Mat& text, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, float first_timestep)
+bool QwenTransformer::prepare_controlnet(const ncnn::Mat& control_context, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask)
+{
+    control_before_.release();
+#if NCNN_VULKAN
+    control_before_vk_.release();
+#endif
+    if (!models_.transformer_controlnet
+        || !is_matrix(control_context, 129, image_tokens_)
+        || !is_matrix(cos, kRopeDim, joint_tokens_) || !is_matrix(sin, kRopeDim, joint_tokens_)
+        || !is_matrix(mask, joint_tokens_, joint_tokens_)
+        || !valid_hidden(prefix_hidden_, prefix_tokens_) || prefix_hidden_.elembits() != 32)
+        return false;
+    if (!initialize_block_blobs())
+    {
+        fprintf(stderr, "ControlNet graph blob map is incomplete\n");
+        return false;
+    }
+
+    ncnn::Mat image_features;
+#if NCNN_VULKAN
+    const bool use_vulkan = config_.use_vulkan_compute;
+    if (use_vulkan)
+    {
+        const ncnn::Net& controlnet = *models_.transformer_controlnet;
+        ncnn::VkCompute image_cmd(controlnet.vulkan_device());
+        ncnn::VkMat context_vk;
+        ncnn::VkMat image_features_vk;
+        image_cmd.record_upload(control_context, context_vk, controlnet.opt);
+        ncnn::Extractor image_ex = controlnet.create_extractor();
+        if (context_vk.empty() || image_ex.input(control_net_blobs_.image_input, context_vk) != 0
+            || image_ex.extract(control_net_blobs_.image_output, image_features_vk, image_cmd) != 0
+            || image_cmd.submit_and_wait() != 0 || image_features_vk.empty())
+            return false;
+
+        ncnn::VkCompute download_cmd(controlnet.vulkan_device());
+        download_cmd.record_download(image_features_vk, image_features, controlnet.opt);
+        if (image_features.empty() || download_cmd.submit_and_wait() != 0)
+            return false;
+        if (image_features.elempack != 1)
+        {
+            ncnn::Mat unpacked;
+            ncnn::convert_packing(image_features, unpacked, 1, controlnet.opt);
+            if (unpacked.empty())
+                return false;
+            image_features = unpacked;
+        }
+    }
+    else
+#endif
+    {
+        ncnn::Extractor image_ex = models_.transformer_controlnet->create_extractor();
+        if (image_ex.input(control_net_blobs_.image_input, control_context) != 0
+            || image_ex.extract(control_net_blobs_.image_output, image_features, 0) != 0)
+            return false;
+    }
+    if (image_features.empty() || image_features.dims != 2 || image_features.w != kHiddenDim
+        || image_features.h != image_tokens_ || image_features.elempack != 1
+        || (image_features.elembits() != 16 && image_features.elembits() != 32))
+    {
+        fprintf(stderr, "ControlNet image projection failed\n");
+        return false;
+    }
+
+    ncnn::Mat control_joint;
+    control_joint.create(kHiddenDim, joint_tokens_, image_features.elemsize, 1);
+    if (control_joint.empty())
+        return false;
+    std::memset(control_joint.data, 0, control_joint.total() * control_joint.elemsize);
+    const size_t row_bytes = (size_t)kHiddenDim * image_features.elemsize;
+    for (int i = 0; i < image_tokens_; i++)
+        std::memcpy(control_joint.row(target_row_begin_ + i), image_features.row(i), row_bytes);
+    image_features.release();
+
+#if NCNN_VULKAN
+    if (use_vulkan)
+    {
+        const ncnn::Net& controlnet = *models_.transformer_controlnet;
+        ncnn::VkCompute before_cmd(controlnet.vulkan_device());
+        ncnn::VkMat control_joint_vk;
+        before_cmd.record_upload(control_joint, control_joint_vk, controlnet.opt);
+        ncnn::Extractor before_ex = controlnet.create_extractor();
+        if (control_joint_vk.empty()
+            || before_ex.input(control_net_blobs_.before_input, control_joint_vk) != 0
+            || before_ex.extract(control_net_blobs_.before_output, control_before_vk_, before_cmd) != 0
+            || before_cmd.submit_and_wait() != 0 || control_before_vk_.empty()
+            || control_before_vk_.dims != 2 || control_before_vk_.w != kHiddenDim
+            || control_before_vk_.h * control_before_vk_.elempack != joint_tokens_)
+            return false;
+    }
+    else
+#endif
+    {
+        ncnn::Extractor before_ex = models_.transformer_controlnet->create_extractor();
+        if (before_ex.input(control_net_blobs_.before_input, control_joint) != 0
+            || before_ex.extract(control_net_blobs_.before_output, control_before_, 0) != 0)
+            return false;
+    }
+    control_joint.release();
+#if NCNN_VULKAN
+    if (!use_vulkan)
+#endif
+    {
+        if (!valid_hidden(control_before_, joint_tokens_))
+        {
+            fprintf(stderr, "ControlNet condition projection failed\n");
+            return false;
+        }
+    }
+
+    joint_cos_ = cos;
+    joint_sin_ = sin;
+    joint_mask_ = mask;
+#if NCNN_VULKAN
+    if (use_vulkan && !upload_control_static())
+        return false;
+#endif
+    control_ready_ = true;
+    return true;
+}
+
+#if NCNN_VULKAN
+bool QwenTransformer::upload_control_static()
+{
+    const ncnn::Net& net = *models_.transformer_blocks;
+    ncnn::VkCompute cmd(net.vulkan_device());
+    cmd.record_upload(joint_cos_, joint_cos_vk_, net.opt);
+    cmd.record_upload(joint_sin_, joint_sin_vk_, net.opt);
+    ncnn::Mat mask_storage;
+    if (net.opt.use_bf16_storage)
+        ncnn::cast_float32_to_bfloat16(joint_mask_, mask_storage, net.opt);
+    else
+        mask_storage = joint_mask_;
+    if (control_before_vk_.empty() || joint_cos_vk_.empty() || joint_sin_vk_.empty() || mask_storage.empty())
+        return false;
+    cmd.record_clone(mask_storage, joint_mask_vk_, net.opt);
+    return !joint_mask_vk_.empty() && cmd.submit_and_wait() == 0;
+}
+#endif
+
+bool QwenTransformer::prepare_text_to_image(const ncnn::Mat& text, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, float first_timestep, const ncnn::Mat& control_context)
 {
     edit_ready_ = false;
     prefix_ready_ = false;
+    control_ready_ = false;
     const int sequence = text_tokens_ + image_tokens_;
     if (!is_matrix(text, kHiddenDim, text_tokens_) || !is_matrix(cos, kRopeDim, sequence)
         || !is_matrix(sin, kRopeDim, sequence) || !is_matrix(mask, sequence, sequence))
         return false;
+
+    const bool controlnet = models_.transformer_controlnet != nullptr;
+    if (controlnet)
+    {
+        prefix_tokens_ = text_tokens_;
+        target_row_begin_ = prefix_tokens_;
+        joint_tokens_ = sequence;
+        if (!project_text(text, prefix_hidden_, 0))
+            return false;
+        joint_cos_ = cos;
+        joint_sin_ = sin;
+        joint_mask_ = mask;
+        if (!prepare_controlnet(control_context, joint_cos_, joint_sin_, joint_mask_))
+            return false;
+        prefix_ready_ = true;
+        return true;
+    }
 
     ncnn::Mat prefix_hidden;
     ncnn::Mat modulation;
@@ -524,6 +777,242 @@ bool QwenTransformer::run_blocks_cpu(ncnn::Mat hidden, const std::array<ncnn::Ma
     output = hidden;
     return true;
 }
+
+bool QwenTransformer::run_control_net_block_cpu(int block, const ncnn::Mat& hidden,
+                                                       const std::array<ncnn::Mat, 4>& modulation,
+                                                       const ncnn::Mat& cos, const ncnn::Mat& sin,
+                                                       const ncnn::Mat& mask, ncnn::Mat& output,
+                                                       ncnn::Mat& hint)
+{
+    if (block < 0 || block >= 16 || !models_.transformer_controlnet)
+        return false;
+    const ncnn::Net& net = *models_.transformer_controlnet;
+    ncnn::Extractor ex = net.create_extractor();
+    if (ex.input(control_net_blobs_.hidden[block], hidden) != 0)
+        return false;
+    for (int i = 0; i < 4; i++)
+        if (ex.input(control_net_blobs_.modulation[block][i], modulation[i]) != 0)
+            return false;
+    if (ex.input(control_net_blobs_.rope_cos, cos) != 0
+        || ex.input(control_net_blobs_.rope_sin, sin) != 0
+        || ex.input(control_net_blobs_.mask, mask) != 0
+        || ex.extract(control_net_blobs_.output[block], output, 0) != 0
+        || ex.extract(control_net_blobs_.after_output[block], hint, 0) != 0)
+        return false;
+    return valid_hidden(output, joint_tokens_) && valid_hidden(hint, joint_tokens_);
+}
+
+bool QwenTransformer::run_control_blocks_cpu(const ncnn::Mat& hidden_input,
+                                              const std::array<ncnn::Mat, 4>& modulation,
+                                              const ncnn::Mat& cos, const ncnn::Mat& sin,
+                                              const ncnn::Mat& mask, ncnn::Mat& output)
+{
+    if (!control_ready_ || !valid_hidden(hidden_input, joint_tokens_) || hidden_input.elembits() != 32
+        || !is_matrix(cos, kRopeDim, joint_tokens_) || !is_matrix(sin, kRopeDim, joint_tokens_)
+        || !is_matrix(mask, joint_tokens_, joint_tokens_))
+        return false;
+    for (int i = 0; i < 4; i++)
+        if (!is_matrix(modulation[i], kHiddenDim, joint_tokens_))
+            return false;
+
+    const ncnn::Net& net = *models_.transformer_blocks;
+    auto run_base_block = [&](int block, const ncnn::Mat& hidden, ncnn::Mat& next) {
+        const BlockBlobs& b = block_blobs_[block];
+        ncnn::Extractor ex = net.create_extractor();
+        if (ex.input(b.residual, hidden) != 0 || ex.input(b.normalized, hidden) != 0)
+            return false;
+        for (int i = 0; i < 4; i++)
+            if (ex.input(b.modulation[i], modulation[i]) != 0)
+                return false;
+        if (ex.input(b.cos_q, cos) != 0 || ex.input(b.cos_k, cos) != 0
+            || ex.input(b.sin_q, sin) != 0 || ex.input(b.sin_k, sin) != 0
+            || ex.input(b.mask, mask) != 0)
+            return false;
+        return ex.extract(b.output, next, 0) == 0
+            && valid_hidden(next, joint_tokens_) && next.elembits() == 32;
+    };
+
+    ncnn::Extractor before = net.create_extractor();
+    ncnn::Mat hidden = hidden_input;
+    ncnn::Mat control;
+    if (before.input(control_blobs_.before_input, control_before_) != 0
+        || before.input(control_blobs_.base_input, hidden) != 0
+        || before.extract(control_blobs_.add_before_output, control, 0) != 0
+        || !valid_hidden(control, joint_tokens_))
+        return false;
+
+    for (int i = 0; i < 16; i++)
+    {
+        ncnn::Mat control_next;
+        ncnn::Mat hint;
+        ncnn::Mat base_next;
+        if (!run_control_net_block_cpu(i, control, modulation, cos, sin, mask, control_next, hint)
+            || !run_base_block(i * 2, hidden, base_next))
+            return false;
+
+        ncnn::Extractor add = net.create_extractor();
+        ncnn::Mat added;
+        if (add.input(block_blobs_[i * 2].output, base_next) != 0
+            || add.input(control_blobs_.after_input[i], hint) != 0
+            || add.extract(control_blobs_.add_output[i], added, 0) != 0
+            || !valid_hidden(added, joint_tokens_))
+            return false;
+        hidden = added;
+        control = control_next;
+
+        ncnn::Mat odd_next;
+        if (!run_base_block(i * 2 + 1, hidden, odd_next))
+        {
+            fprintf(stderr, "base transformer block %d inference failed\n", i * 2 + 1);
+            return false;
+        }
+        hidden = odd_next;
+    }
+    output = hidden;
+    return true;
+}
+
+#if NCNN_VULKAN
+bool QwenTransformer::run_control_net_block_vulkan(int block, const ncnn::VkMat& hidden,
+                                                     const std::array<ncnn::VkMat, 4>& modulation,
+                                                     const ncnn::VkMat& cos, const ncnn::VkMat& sin,
+                                                     const ncnn::VkMat& mask, ncnn::VkMat& output,
+                                                     ncnn::VkMat& hint)
+{
+    if (block < 0 || block >= 16 || !models_.transformer_controlnet || hidden.empty())
+        return false;
+    const ncnn::Net& net = *models_.transformer_controlnet;
+    ncnn::VkCompute cmd(net.vulkan_device());
+    ncnn::Extractor ex = net.create_extractor();
+    if (ex.input(control_net_blobs_.hidden[block], hidden) != 0)
+    {
+        fprintf(stderr, "ControlNet block %d hidden input failed\n", block);
+        return false;
+    }
+    for (int i = 0; i < 4; i++)
+        if (ex.input(control_net_blobs_.modulation[block][i], modulation[i]) != 0)
+        {
+            fprintf(stderr, "ControlNet block %d modulation %d input failed\n", block, i);
+            return false;
+        }
+    if (ex.input(control_net_blobs_.rope_cos, cos) != 0
+        || ex.input(control_net_blobs_.rope_sin, sin) != 0
+        || ex.input(control_net_blobs_.mask, mask) != 0)
+    {
+        fprintf(stderr, "ControlNet block %d rope/mask input failed\n", block);
+        return false;
+    }
+    const int state_ret = ex.extract(control_net_blobs_.output[block], output, cmd);
+    if (state_ret != 0)
+    {
+        fprintf(stderr, "ControlNet block %d state extraction failed: %d\n", block, state_ret);
+        return false;
+    }
+    const int hint_ret = ex.extract(control_net_blobs_.after_output[block], hint, cmd);
+    if (hint_ret != 0)
+    {
+        fprintf(stderr, "ControlNet block %d hint extraction failed: %d\n", block, hint_ret);
+        return false;
+    }
+    const int submit_ret = cmd.submit_and_wait();
+    if (submit_ret != 0)
+    {
+        fprintf(stderr, "ControlNet block %d command submit failed: %d\n", block, submit_ret);
+        return false;
+    }
+    return !output.empty() && !hint.empty()
+        && output.dims == 2 && output.w == kHiddenDim
+        && output.h * output.elempack == joint_tokens_
+        && hint.dims == 2 && hint.w == kHiddenDim
+        && hint.h * hint.elempack == joint_tokens_;
+}
+
+bool QwenTransformer::run_control_blocks_vulkan(const ncnn::VkMat& hidden_input,
+                                                 const std::array<ncnn::VkMat, 4>& modulation,
+                                                 const ncnn::VkMat& cos, const ncnn::VkMat& sin,
+                                                 const ncnn::VkMat& mask, ncnn::VkMat& output)
+{
+    if (!control_ready_ || hidden_input.empty() || hidden_input.dims != 2
+        || hidden_input.w != kHiddenDim || hidden_input.h * hidden_input.elempack != joint_tokens_
+        || cos.empty() || sin.empty() || mask.empty())
+        return false;
+    for (int i = 0; i < 4; i++)
+        if (modulation[i].empty())
+            return false;
+
+    const ncnn::Net& net = *models_.transformer_blocks;
+    auto run_base_block = [&](int block, const ncnn::VkMat& hidden, ncnn::VkMat& next) {
+        const BlockBlobs& b = block_blobs_[block];
+        ncnn::VkCompute cmd(net.vulkan_device());
+        ncnn::Extractor ex = net.create_extractor();
+        if (ex.input(b.residual, hidden) != 0 || ex.input(b.normalized, hidden) != 0)
+            return false;
+        for (int i = 0; i < 4; i++)
+            if (ex.input(b.modulation[i], modulation[i]) != 0)
+                return false;
+        if (ex.input(b.cos_q, cos) != 0 || ex.input(b.cos_k, cos) != 0
+            || ex.input(b.sin_q, sin) != 0 || ex.input(b.sin_k, sin) != 0
+            || ex.input(b.mask, mask) != 0)
+            return false;
+        return ex.extract(b.output, next, cmd) == 0 && cmd.submit_and_wait() == 0
+            && !next.empty() && next.dims == 2 && next.w == kHiddenDim
+            && next.h * next.elempack == joint_tokens_;
+    };
+
+    ncnn::VkCompute before_cmd(net.vulkan_device());
+    ncnn::Extractor before = net.create_extractor();
+    ncnn::VkMat hidden = hidden_input;
+    ncnn::VkMat control;
+    if (before.input(control_blobs_.before_input, control_before_vk_) != 0
+        || before.input(control_blobs_.base_input, hidden) != 0
+        || before.extract(control_blobs_.add_before_output, control, before_cmd) != 0
+        || before_cmd.submit_and_wait() != 0 || control.empty())
+        return false;
+
+    for (int i = 0; i < 16; i++)
+    {
+        ncnn::VkMat control_next;
+        ncnn::VkMat hint;
+        ncnn::VkMat base_next;
+        if (!run_control_net_block_vulkan(i, control, modulation, cos, sin, mask,
+                                          control_next, hint))
+        {
+            fprintf(stderr, "ControlNet block %d inference failed\n", i);
+            return false;
+        }
+        if (!run_base_block(i * 2, hidden, base_next))
+        {
+            fprintf(stderr, "base transformer block %d inference failed\n", i * 2);
+            return false;
+        }
+        ncnn::VkCompute add_cmd(net.vulkan_device());
+        ncnn::Extractor add = net.create_extractor();
+        ncnn::VkMat added;
+        if (add.input(block_blobs_[i * 2].output, base_next) != 0
+            || add.input(control_blobs_.after_input[i], hint) != 0
+            || add.extract(control_blobs_.add_output[i], added, add_cmd) != 0
+            || add_cmd.submit_and_wait() != 0 || added.empty())
+        {
+            fprintf(stderr, "ControlNet hint %d injection failed\n", i);
+            return false;
+        }
+        hidden = added;
+        control = control_next;
+
+        ncnn::VkMat odd_next;
+        if (!run_base_block(i * 2 + 1, hidden, odd_next))
+        {
+            fprintf(stderr, "base transformer block %d inference failed\n", i * 2 + 1);
+            return false;
+        }
+        hidden = odd_next;
+    }
+    output = hidden;
+    return true;
+}
+
+
+#endif
 
 #if NCNN_VULKAN
 bool QwenTransformer::download_cache(const ncnn::VkMat& source, ncnn::Mat& data, CacheLayout& layout, ncnn::VkCompute& cmd, const ncnn::Option& opt)
@@ -700,6 +1189,14 @@ bool QwenTransformer::run_target(const ncnn::Mat& latents, float timestep, ncnn:
 {
     if (!prefix_ready_ || !is_matrix(latents, kLatentDim, image_tokens_))
         return false;
+    if (models_.transformer_controlnet)
+    {
+        ncnn::Mat modulation;
+        ncnn::Mat temb;
+        if (!run_time_condition(timestep, modulation, temb))
+            return false;
+        return run_control_target(latents, modulation, temb, noise);
+    }
     ncnn::Mat modulation;
     ncnn::Mat temb;
     std::array<ncnn::Mat, 4> target_modulation;
@@ -736,10 +1233,89 @@ bool QwenTransformer::run_target(const ncnn::Mat& latents, float timestep, ncnn:
     return output.extract("out0", noise) == 0 && is_matrix(noise, kLatentDim, image_tokens_);
 }
 
-bool QwenTransformer::prepare_edit(const ncnn::Mat& condition_latents, const ncnn::Mat& text, const std::vector<unsigned char>& text_image_slots, const std::vector<TransformerImageShape>& image_shapes, float first_timestep)
+bool QwenTransformer::run_control_target(const ncnn::Mat& latents, const ncnn::Mat& timestep_modulation, const ncnn::Mat& temb, ncnn::Mat& noise)
+{
+    if (!control_ready_ || !valid_hidden(prefix_hidden_, prefix_tokens_)
+        || !is_matrix(timestep_modulation, kModulationDim, 2)
+        || !is_matrix(temb, kHiddenDim, 2))
+        return false;
+    std::array<ncnn::Mat, 4> modulation;
+    ncnn::Mat target_temb;
+    ncnn::Mat target_hidden;
+    ncnn::Mat joint_hidden;
+    if (!make_joint_modulation(timestep_modulation, prefix_tokens_, image_tokens_, modulation)
+        || !expand_temb_row(temb, 0, image_tokens_, target_temb)
+        || !project_latents(latents, target_hidden, 0)
+        || !make_joint_hidden(prefix_hidden_, target_hidden, joint_hidden))
+        return false;
+
+    ncnn::Mat final_hidden;
+#if NCNN_VULKAN
+    if (config_.use_vulkan_compute)
+    {
+        const ncnn::Net& net = *models_.transformer_blocks;
+        ncnn::VkMat hidden_vk;
+        std::array<ncnn::VkMat, 4> modulation_vk;
+        {
+            ncnn::VkCompute upload_cmd(net.vulkan_device());
+            upload_cmd.record_upload(joint_hidden, hidden_vk, net.opt);
+            for (int i = 0; i < 4; i++)
+                upload_cmd.record_upload(modulation[i], modulation_vk[i], net.opt);
+            if (hidden_vk.empty())
+                return false;
+            for (int i = 0; i < 4; i++)
+                if (modulation_vk[i].empty())
+                    return false;
+            if (upload_cmd.submit_and_wait() != 0)
+                return false;
+        }
+        ncnn::VkMat final_hidden_vk;
+        if (!run_control_blocks_vulkan(hidden_vk, modulation_vk, joint_cos_vk_, joint_sin_vk_, joint_mask_vk_, final_hidden_vk))
+            return false;
+        ncnn::VkCompute download_cmd(net.vulkan_device());
+        download_cmd.record_download(final_hidden_vk, final_hidden, net.opt);
+        if (final_hidden.empty() || download_cmd.submit_and_wait() != 0)
+            return false;
+        if (final_hidden.elempack != 1)
+        {
+            ncnn::Mat unpacked;
+            ncnn::convert_packing(final_hidden, unpacked, 1, net.opt);
+            if (unpacked.empty())
+                return false;
+            final_hidden = unpacked;
+        }
+        if (final_hidden.elembits() == 16)
+        {
+            ncnn::Mat fp32;
+            ncnn::cast_bfloat16_to_float32(final_hidden, fp32, net.opt);
+            if (fp32.empty())
+                return false;
+            final_hidden = fp32;
+        }
+        if (!valid_hidden(final_hidden, joint_tokens_) || final_hidden.elembits() != 32)
+            return false;
+    }
+    else
+#endif
+    {
+        if (!run_control_blocks_cpu(joint_hidden, modulation, joint_cos_, joint_sin_, joint_mask_, final_hidden))
+            return false;
+    }
+
+    ncnn::Mat target_output;
+    if (!copy_rows(final_hidden, target_row_begin_, image_tokens_, kHiddenDim, target_output))
+        return false;
+    ncnn::Extractor output = models_.transformer_output->create_extractor();
+    if (output.input("in0", target_output) != 0 || output.input("in1", target_temb) != 0)
+        return false;
+    return output.extract("out0", noise) == 0 && is_matrix(noise, kLatentDim, image_tokens_);
+}
+
+bool QwenTransformer::prepare_edit(const ncnn::Mat& condition_latents, const ncnn::Mat& text, const std::vector<unsigned char>& text_image_slots, const std::vector<TransformerImageShape>& image_shapes, float first_timestep, const ncnn::Mat& control_context)
 {
     edit_ready_ = false;
     prefix_ready_ = false;
+    control_ready_ = false;
     if (!models_.transformer_input || !is_matrix(condition_latents, kLatentDim, condition_latents.h) || !is_matrix(text, kHiddenDim, text_tokens_))
         return false;
     int condition_tokens = 0;
@@ -802,10 +1378,27 @@ bool QwenTransformer::prepare_edit(const ncnn::Mat& condition_latents, const ncn
         return false;
 
     combined_hidden.release();
+    prefix_tokens_ = prefix_tokens;
+    target_row_begin_ = prefix_tokens;
+    joint_tokens_ = sequence;
+    if (models_.transformer_controlnet)
+    {
+        prefix_hidden_ = prefix_hidden;
+        joint_cos_ = edit_cos;
+        joint_sin_ = edit_sin;
+        joint_mask_ = edit_mask;
+        edit_mask.release();
+        edit_cos.release();
+        edit_sin.release();
+        if (!prepare_controlnet(control_context, joint_cos_, joint_sin_, joint_mask_))
+            return false;
+        edit_ready_ = true;
+        prefix_ready_ = true;
+        return true;
+    }
     edit_mask.release();
     edit_cos.release();
     edit_sin.release();
-    prefix_tokens_ = prefix_tokens;
     if (!prepare_prefix(prefix_hidden, modulation, prefix_cos, prefix_sin, prefix_mask))
         return false;
     edit_ready_ = true;

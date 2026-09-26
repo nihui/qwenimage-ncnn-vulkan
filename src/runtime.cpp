@@ -89,7 +89,7 @@ bool select_transformer_memory(RuntimeConfig& config, uint64_t budget, bool sepa
 }
 }
 
-bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int prefix_tokens, int negative_prefix_tokens, uint64_t transformer_weights)
+bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int prefix_tokens, int negative_prefix_tokens, uint64_t transformer_weights, bool use_prefix_cache)
 {
     config.use_weights_in_host_memory = config.low_vram > 0;
     config.use_kvcache_in_host_memory = false;
@@ -116,16 +116,16 @@ bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int p
     const uint64_t branches = negative_prefix_tokens > 0 ? 2 : 1;
     const uint64_t hidden_row = 4096 * 2;
     const uint64_t cache_row = hidden_row * 2;
-    const uint64_t prefix_cache = both_prefixes * cache_row * 32;
+    const uint64_t prefix_cache = use_prefix_cache ? both_prefixes * cache_row * 32 : 0;
 
     // bf16 one-block workspace envelope calibrated against t2i and edit
     // include the larger prefill/decode mask and both cfg scratch cache pools
     const uint64_t activations = std::max(prefix, target) * hidden_row * 24;
     const uint64_t mask = std::max(prefix * prefix, target * (prefix + target)) * 2;
-    const uint64_t decode_cache = (both_prefixes + branches * target) * cache_row * 3 / 2;
+    const uint64_t decode_cache = use_prefix_cache ? (both_prefixes + branches * target) * cache_row * 3 / 2 : 0;
     const uint64_t workspace = activations + mask + decode_cache + 384 * mib;
     // each cfg branch retains one reusable upload allocation when spilling kv
-    const uint64_t upload_cache = both_prefixes * cache_row;
+    const uint64_t upload_cache = use_prefix_cache ? both_prefixes * cache_row : 0;
     if (transformer_weights > std::numeric_limits<uint64_t>::max() - workspace - prefix_cache - upload_cache)
         return false;
     const uint64_t estimate = transformer_weights + prefix_cache + workspace;
@@ -133,7 +133,10 @@ bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int p
     const bool fits = select_transformer_memory(config, budget, has_separate_host_heap(vkdev), transformer_weights, prefix_cache, upload_cache, workspace, selected);
     auto megabytes = [&](uint64_t bytes) { return (unsigned long long)(bytes / mib + (bytes % mib != 0)); };
     fprintf(stderr, "low_vram = %d (heap=%llu MB, estimated transformer=%llu MB, prefix cache=%llu MB)\n", config.use_weights_in_host_memory ? 1 : 0, megabytes(budget), megabytes(estimate), megabytes(prefix_cache));
-    fprintf(stderr, "transformer prefix cache = %s (estimated working memory=%llu MB)\n", config.use_kvcache_in_host_memory ? "host" : "gpu", megabytes(selected));
+    if (use_prefix_cache)
+        fprintf(stderr, "transformer prefix cache = %s (estimated working memory=%llu MB)\n", config.use_kvcache_in_host_memory ? "host" : "gpu", megabytes(selected));
+    else
+        fprintf(stderr, "transformer prefix cache = disabled (ControlNet graph, estimated working memory=%llu MB)\n", megabytes(selected));
     if (!fits)
     {
         fprintf(stderr, "insufficient Vulkan memory for transformer: estimated %llu MB, budget %llu MB; reduce output size or reference image count/size\n", megabytes(selected), megabytes(budget));
@@ -178,7 +181,7 @@ ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage)
     return option;
 }
 
-bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& config, ModelStage stage)
+bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& config, ModelStage stage, TransformerLoRA* lora, TransformerPart part)
 {
     net.opt = make_ncnn_option(config, stage);
 #if NCNN_VULKAN
@@ -213,6 +216,11 @@ bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& conf
         register_dupup3d_layer(net);
     if (stage == ModelStage::VaeEncoder)
         register_avgdown3d_layer(net);
+    if (lora && register_transformer_lora(net, lora, part) != 0)
+    {
+        fprintf(stderr, "failed to register transformer LoRA layers for %s\n", files.param.c_str());
+        return false;
+    }
     net.opt.lightmode = true;
     if (net.load_param(files.param.c_str()) != 0)
     {

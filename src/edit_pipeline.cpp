@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "image_io.h"
+#include "controlnet.h"
 #include "scheduler.h"
 #include "text_encoder.h"
 #include "transformer.h"
@@ -308,7 +309,7 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
                 negative_prefix_tokens++;
     }
     uint64_t transformer_weights = 0;
-    if (!get_transformer_weight_size(paths_, transformer_weights) || !configure_auto_low_vram(config_, request.width, request.height, prefix_tokens, negative_prefix_tokens, transformer_weights))
+    if (!get_transformer_weight_size(paths_, transformer_weights, request.controlnet_path, request.lora_path) || !configure_auto_low_vram(config_, request.width, request.height, prefix_tokens, negative_prefix_tokens, transformer_weights, request.controlnet_path.empty()))
         return false;
 
     if (!models_.load_vision_encoder(paths_, config_))
@@ -404,6 +405,7 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
     std::vector<TransformerImageShape> image_shapes;
     const Clock::time_point vae_encode_begin = Clock::now();
     bool vae_encode_ok = true;
+    ncnn::Mat control_context;
     {
         QwenVaeEncoder encoder(*models_.vae_encoder, config_);
         for (size_t i = 0; i < rgba_images.size(); i++)
@@ -426,6 +428,8 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
             condition_offset += image_h * image_w;
             image_shapes.push_back({image_h, image_w});
         }
+        if (vae_encode_ok && !request.controlnet_path.empty())
+            vae_encode_ok = encode_control_context(encoder, request.control_image_path, request.width, request.height, control_context);
     }
     models_.unload_vae_encoder();
     if (!vae_encode_ok)
@@ -443,24 +447,38 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         return false;
 
     image_shapes.push_back({target_h, target_w});
-    if (!models_.load_transformer(paths_, config_))
+    if (!models_.load_transformer(paths_, config_, request.lora_path, request.lora_scale, request.controlnet_path, request.control_scale))
     {
         fprintf(stderr, "edit transformer graph load failed\n");
         return false;
     }
-    const std::vector<float> sigmas = QwenScheduler::make_sigmas(request.steps, target_tokens, false);
+    std::vector<float> sigmas;
+    if (models_.transformer_lora && models_.transformer_lora->has_pdd_output())
+    {
+        if (request.steps != models_.transformer_lora->required_steps())
+        {
+            fprintf(stderr, "PDD LoRA requires exactly %d steps\n", models_.transformer_lora->required_steps());
+            models_.unload_transformer();
+            return false;
+        }
+        sigmas.resize(request.steps + 1);
+        for (int i = 0; i <= request.steps; i++)
+            sigmas[i] = models_.transformer_lora->sigma(i);
+    }
+    else
+        sigmas = QwenScheduler::make_sigmas(request.steps, target_tokens, false);
     std::vector<ncnn::Mat> batch_latents(request.batch);
     const Clock::time_point transformer_begin = Clock::now();
     bool transformer_ok = true;
     {
         QwenTransformer positive_transformer(models_, config_, text_tokens, target_tokens);
         QwenTransformer negative_transformer(models_, config_, negative_text_tokens, target_tokens);
-        transformer_ok = positive_transformer.prepare_edit(condition_latents, text, text_slots, image_shapes, sigmas[0]);
+        transformer_ok = positive_transformer.prepare_edit(condition_latents, text, text_slots, image_shapes, sigmas[0], control_context);
         if (!transformer_ok)
             fprintf(stderr, "edit positive transformer prefix prefill failed\n");
         if (transformer_ok && do_true_cfg)
         {
-            transformer_ok = negative_transformer.prepare_edit(condition_latents, negative_text, negative_text_slots, image_shapes, sigmas[0]);
+            transformer_ok = negative_transformer.prepare_edit(condition_latents, negative_text, negative_text_slots, image_shapes, sigmas[0], control_context);
             if (!transformer_ok)
                 fprintf(stderr, "edit negative transformer prefix prefill failed\n");
         }
@@ -480,6 +498,8 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
 
             for (int z = 0; z < request.steps; z++)
             {
+                if (models_.transformer_lora)
+                    models_.transformer_lora->set_step(z);
                 ncnn::Mat noise;
                 if (!positive_transformer.run_edit(target_latents, sigmas[z], noise))
                 {

@@ -1,0 +1,4 @@
+/build/
+/nohup.out
+__pycache__/
+*.py[cod]

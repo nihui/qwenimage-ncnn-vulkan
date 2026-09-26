@@ -26,11 +26,11 @@ public:
 
     static bool make_rope(int text_tokens, int valid_text_tokens, int latent_height, int latent_width, ncnn::Mat& cos, ncnn::Mat& sin);
     static bool make_attention_mask(int text_tokens, int valid_text_tokens, int image_tokens, ncnn::Mat& mask);
-    bool prepare_text_to_image(const ncnn::Mat& text, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, float first_timestep);
+    bool prepare_text_to_image(const ncnn::Mat& text, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, float first_timestep, const ncnn::Mat& control_context = ncnn::Mat());
     bool run(const ncnn::Mat& latents, float timestep, ncnn::Mat& noise);
 
     // prepare the fixed image layout once before the denoising loop
-    bool prepare_edit(const ncnn::Mat& condition_latents, const ncnn::Mat& text, const std::vector<unsigned char>& text_image_slots, const std::vector<TransformerImageShape>& image_shapes, float first_timestep);
+    bool prepare_edit(const ncnn::Mat& condition_latents, const ncnn::Mat& text, const std::vector<unsigned char>& text_image_slots, const std::vector<TransformerImageShape>& image_shapes, float first_timestep, const ncnn::Mat& control_context = ncnn::Mat());
     bool run_edit(const ncnn::Mat& latents, float timestep, ncnn::Mat& noise);
 
 private:
@@ -49,6 +49,39 @@ private:
         int cache_v_in = -1;
         int cache_k_out = -1;
         int cache_v_out = -1;
+    };
+
+    struct ControlBlobs
+    {
+        int before_input = -1;
+        int base_input = -1;
+        int add_before_output = -1;
+        int after_input[16];
+        int add_output[16];
+        ControlBlobs() { for (int i = 0; i < 16; i++) after_input[i] = add_output[i] = -1; }
+    };
+
+    struct ControlNetBlobs
+    {
+        int image_input = -1;
+        int image_output = -1;
+        int before_input = -1;
+        int before_output = -1;
+        int rope_cos = -1;
+        int rope_sin = -1;
+        int mask = -1;
+        int hidden[16];
+        int modulation[16][4];
+        int output[16];
+        int after_output[16];
+        ControlNetBlobs()
+        {
+            for (int i = 0; i < 16; i++)
+            {
+                hidden[i] = output[i] = after_output[i] = -1;
+                for (int j = 0; j < 4; j++) modulation[i][j] = -1;
+            }
+        }
     };
 
 #if NCNN_VULKAN
@@ -77,8 +110,8 @@ private:
     };
 
     bool initialize_block_blobs();
-    bool project_text(const ncnn::Mat& text, ncnn::Mat& projected) const;
-    bool project_latents(const ncnn::Mat& latents, ncnn::Mat& projected) const;
+    bool project_text(const ncnn::Mat& text, ncnn::Mat& projected, int output_type = 1) const;
+    bool project_latents(const ncnn::Mat& latents, ncnn::Mat& projected, int output_type = 1) const;
 #if NCNN_VULKAN
     bool project_latents_vulkan(const ncnn::Mat& latents, ncnn::VkMat& projected) const;
 #endif
@@ -89,6 +122,15 @@ private:
     bool run_blocks_vulkan(ncnn::VkMat hidden, const std::array<ncnn::Mat, 4>& modulation, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, bool prefill, ncnn::VkMat& output);
 #endif
     bool run_target(const ncnn::Mat& latents, float timestep, ncnn::Mat& noise);
+    bool prepare_controlnet(const ncnn::Mat& control_context, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask);
+    bool run_control_target(const ncnn::Mat& latents, const ncnn::Mat& timestep_modulation, const ncnn::Mat& temb, ncnn::Mat& noise);
+    bool run_control_net_block_cpu(int block, const ncnn::Mat& hidden, const std::array<ncnn::Mat, 4>& modulation, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, ncnn::Mat& output, ncnn::Mat& hint);
+    bool run_control_blocks_cpu(const ncnn::Mat& hidden, const std::array<ncnn::Mat, 4>& modulation, const ncnn::Mat& cos, const ncnn::Mat& sin, const ncnn::Mat& mask, ncnn::Mat& output);
+#if NCNN_VULKAN
+    bool run_control_net_block_vulkan(int block, const ncnn::VkMat& hidden, const std::array<ncnn::VkMat, 4>& modulation, const ncnn::VkMat& cos, const ncnn::VkMat& sin, const ncnn::VkMat& mask, ncnn::VkMat& output, ncnn::VkMat& hint);
+    bool run_control_blocks_vulkan(const ncnn::VkMat& hidden, const std::array<ncnn::VkMat, 4>& modulation, const ncnn::VkMat& cos, const ncnn::VkMat& sin, const ncnn::VkMat& mask, ncnn::VkMat& output);
+    bool upload_control_static();
+#endif
 
     const QwenModelSet& models_;
     const RuntimeConfig& config_;
@@ -97,6 +139,16 @@ private:
     int prefix_tokens_;
     bool prefix_ready_;
     bool edit_ready_;
+    bool control_ready_ = false;
+    int joint_tokens_ = 0;
+    int target_row_begin_ = 0;
+    ncnn::Mat prefix_hidden_;
+    ncnn::Mat control_before_;
+    ncnn::Mat joint_cos_;
+    ncnn::Mat joint_sin_;
+    ncnn::Mat joint_mask_;
+    ControlBlobs control_blobs_;
+    ControlNetBlobs control_net_blobs_;
     ncnn::Mat target_cos_;
     ncnn::Mat target_sin_;
     ncnn::Mat target_mask_;
@@ -104,6 +156,10 @@ private:
     std::unique_ptr<ncnn::PoolAllocator> prefix_kvcache_allocator_;
     std::unique_ptr<ncnn::PoolAllocator> decode_kvcache_allocator_;
 #if NCNN_VULKAN
+    ncnn::VkMat control_before_vk_;
+    ncnn::VkMat joint_cos_vk_;
+    ncnn::VkMat joint_sin_vk_;
+    ncnn::VkMat joint_mask_vk_;
     std::unique_ptr<ncnn::VkBlobAllocator> prefix_kvcache_vkallocator_;
     std::unique_ptr<ncnn::VkBlobAllocator> decode_kvcache_vkallocator_;
 #endif
