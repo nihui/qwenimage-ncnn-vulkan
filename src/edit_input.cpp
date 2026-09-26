@@ -175,7 +175,7 @@ int round_to_multiple(double value, int multiple)
     return std::max(multiple, (int)std::floor(value / multiple + 0.5) * multiple);
 }
 
-bool condition_dimensions(int width, int height, int target_area, int& condition_width, int& condition_height)
+bool condition_dimensions(int width, int height, int64_t target_area, int& condition_width, int& condition_height)
 {
     if (width <= 0 || height <= 0 || target_area <= 0)
         return false;
@@ -373,6 +373,14 @@ bool make_causal_mask(int tokens, ncnn::Mat& mask)
 }
 }
 
+bool resize_rgba_lanczos(const QwenRgbaImage& source, int width, int height, std::vector<uint8_t>& output)
+{
+    if (source.width <= 0 || source.height <= 0 || width <= 0 || height <= 0
+        || source.rgba.size() != (size_t)source.width * source.height * 4)
+        return false;
+    return resize_rgba(source, width, height, ResampleFilter::Lanczos, output);
+}
+
 bool prepare_native_edit_request(const std::string& model_dir, const std::vector<std::string>& image_paths, const std::string& prompt, const std::string& negative_prompt, bool has_negative_prompt, int condition_resolution, int width, int height, int steps, unsigned long long seed, const std::string& output, EditRequest& request, std::string* error)
 {
     if (image_paths.empty() || image_paths.size() > 10)
@@ -440,7 +448,7 @@ bool prepare_native_edit_request(const std::string& model_dir, const std::vector
 
         int condition_width = 0;
         int condition_height = 0;
-        if (!condition_dimensions(source.width, source.height, condition_resolution * condition_resolution, condition_width, condition_height))
+        if (!condition_dimensions(source.width, source.height, (int64_t)condition_resolution * condition_resolution, condition_width, condition_height))
         {
             if (error) *error = "failed to determine condition image size";
             return false;

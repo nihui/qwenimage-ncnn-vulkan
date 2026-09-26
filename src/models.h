@@ -21,7 +21,7 @@ struct ModelPaths
 };
 
 ModelPaths make_model_paths(const std::string& model_dir);
-bool get_transformer_weight_size(const ModelPaths& paths, uint64_t& bytes);
+bool get_transformer_weight_size(const ModelPaths& paths, uint64_t& bytes, const std::string& controlnet_param = std::string(), const std::string& lora_path = std::string());
 bool validate_model_paths(const ModelPaths& paths, std::string* error = nullptr);
 bool validate_edit_model_paths(const ModelPaths& paths, std::string* error = nullptr);
 
@@ -39,12 +39,14 @@ struct QwenModelSet
     std::unique_ptr<ncnn::Net> transformer_input;
     std::unique_ptr<ncnn::Net> transformer_blocks;
     std::unique_ptr<ncnn::Net> transformer_output;
+    std::unique_ptr<ncnn::Net> transformer_controlnet;
+    std::unique_ptr<TransformerLoRA> transformer_lora;
 
     bool load_text_encoder(const ModelPaths& paths, const RuntimeConfig& config, bool edit_mode = false);
     bool load_vision_encoder(const ModelPaths& paths, const RuntimeConfig& config);
     bool load_vae_encoder(const ModelPaths& paths, const RuntimeConfig& config);
     bool load_vae_decoder(const ModelPaths& paths, const RuntimeConfig& config);
-    bool load_transformer(const ModelPaths& paths, const RuntimeConfig& config);
+    bool load_transformer(const ModelPaths& paths, const RuntimeConfig& config, const std::string& lora_path = std::string(), float lora_scale = 1.f, const std::string& controlnet_path = std::string(), float control_scale = 1.f);
 
     void unload_text_encoder();
     void unload_vision_encoder();

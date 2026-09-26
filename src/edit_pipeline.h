@@ -63,6 +63,12 @@ struct EditRequest
     int height = 0;
     int drop_system_tokens = 0;
     int steps = 40;
+    bool steps_explicit = false;
+    std::string lora_path;
+    float lora_scale = 1.f;
+    std::string control_image_path;
+    std::string controlnet_path;
+    float control_scale = 1.f;
     int batch = 1;
     uint64_t seed = 42;
 };

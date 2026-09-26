@@ -21,12 +21,14 @@ add_executable(qwenimage-ncnn-vulkan
     tokenizer.cpp
     scheduler.cpp
     models.cpp
+    lora.cpp
     vision.cpp
     text_encoder.cpp
     vae.cpp
     transformer.cpp
     pipeline.cpp
     edit_pipeline.cpp
+    controlnet.cpp
     edit_input.cpp
 )
 
@@ -38,7 +40,6 @@ set(QWENIMAGE_LINK_LIBRARIES ncnn ${DEPS_CODEC_LIBRARIES})
 target_include_directories(qwenimage-ncnn-vulkan PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/ncnn/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/ncnn/src/layer
 )
 
 target_link_libraries(qwenimage-ncnn-vulkan ${QWENIMAGE_LINK_LIBRARIES})

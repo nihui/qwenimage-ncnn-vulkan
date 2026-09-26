@@ -12,6 +12,7 @@
 #include <climits>
 
 #include "image_io.h"
+#include "controlnet.h"
 #include "scheduler.h"
 #include "text_encoder.h"
 #include "tokenizer.h"
@@ -191,7 +192,7 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     const int prefix_tokens = text_config_.dynamic_sequence ? (int)positive_ids.size() - drop_system_tokens_ : text_tokens_;
     const int negative_prefix_tokens = do_true_cfg ? (text_config_.dynamic_sequence ? (int)negative_ids.size() - drop_system_tokens_ : text_tokens_) : 0;
     uint64_t transformer_weights = 0;
-    if (!get_transformer_weight_size(paths_, transformer_weights) || !configure_auto_low_vram(config_, width, height, prefix_tokens, negative_prefix_tokens, transformer_weights))
+    if (!get_transformer_weight_size(paths_, transformer_weights, request.controlnet_path, request.lora_path) || !configure_auto_low_vram(config_, width, height, prefix_tokens, negative_prefix_tokens, transformer_weights, request.controlnet_path.empty()))
         return false;
 
     if (!models_.load_text_encoder(paths_, config_))
@@ -271,25 +272,57 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
         if (!QwenTransformer::make_rope(negative_transformer_text_tokens, negative_transformer_text_tokens, latent_height, latent_width, negative_cos, negative_sin) || !QwenTransformer::make_attention_mask(negative_transformer_text_tokens, negative_transformer_text_tokens, image_tokens, negative_mask))
             return false;
     }
-    if (!models_.load_transformer(paths_, config_))
+    ncnn::Mat control_context;
+    if (!request.controlnet_path.empty())
+    {
+        if (!models_.load_vae_encoder(paths_, config_))
+        {
+            fprintf(stderr, "pipeline ControlNet VAE encoder graph load failed\n");
+            return false;
+        }
+        bool control_ok = false;
+        {
+            QwenVaeEncoder encoder(*models_.vae_encoder, config_);
+            control_ok = encode_control_context(encoder, request.control_image_path, width, height, control_context);
+        }
+        models_.unload_vae_encoder();
+        if (!control_ok)
+            return false;
+    }
+
+    if (!models_.load_transformer(paths_, config_, request.lora_path, request.lora_scale, request.controlnet_path, request.control_scale))
     {
         fprintf(stderr, "pipeline transformer graph load failed\n");
         return false;
     }
 
-    const std::vector<float> sigmas = QwenScheduler::make_sigmas(request.steps, image_tokens, false);
+    std::vector<float> sigmas;
+    if (models_.transformer_lora && models_.transformer_lora->has_pdd_output())
+    {
+        if (request.steps != models_.transformer_lora->required_steps())
+        {
+            fprintf(stderr, "PDD LoRA requires exactly %d steps\n", models_.transformer_lora->required_steps());
+            models_.unload_transformer();
+            return false;
+        }
+        sigmas.resize(request.steps + 1);
+        for (int i = 0; i <= request.steps; i++)
+            sigmas[i] = models_.transformer_lora->sigma(i);
+    }
+    else
+        sigmas = QwenScheduler::make_sigmas(request.steps, image_tokens, false);
     std::vector<ncnn::Mat> batch_latents(request.batch);
     const Clock::time_point transformer_begin = Clock::now();
     bool transformer_ok = true;
     {
         QwenTransformer positive_transformer(models_, config_, transformer_text_tokens, image_tokens);
         QwenTransformer negative_transformer(models_, config_, negative_transformer_text_tokens, image_tokens);
-        transformer_ok = positive_transformer.prepare_text_to_image(text_embeds, cos, sin, mask, sigmas[0]);
+        transformer_ok = positive_transformer.prepare_text_to_image(text_embeds, cos, sin, mask, sigmas[0], control_context);
         if (!transformer_ok)
             fprintf(stderr, "pipeline positive transformer prefix prefill failed\n");
         if (transformer_ok && do_true_cfg)
         {
-            transformer_ok = negative_transformer.prepare_text_to_image(negative_text_embeds, negative_cos, negative_sin, negative_mask, sigmas[0]);
+            transformer_ok = negative_transformer.prepare_text_to_image(negative_text_embeds, negative_cos, negative_sin, negative_mask, sigmas[0], control_context);
             if (!transformer_ok)
                 fprintf(stderr, "pipeline negative transformer prefix prefill failed\n");
         }
@@ -328,6 +361,8 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
 
             for (int z = 0; z < request.steps; z++)
             {
+                if (models_.transformer_lora)
+                    models_.transformer_lora->set_step(z);
                 ncnn::Mat noise;
                 if (!positive_transformer.run(latents, sigmas[z], noise))
                 {

@@ -7,6 +7,7 @@
 
 #include "mat.h"
 #include "net.h"
+#include "lora.h"
 
 namespace qwenimage {
 
@@ -65,7 +66,7 @@ RuntimeConfig normalize_runtime_config(RuntimeConfig config = {});
 bool initialize_memory_budget(RuntimeConfig& config);
 
 // resolve the transformer policy once the actual prefix lengths are available
-bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int prefix_tokens, int negative_prefix_tokens, uint64_t transformer_weights);
+bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int prefix_tokens, int negative_prefix_tokens, uint64_t transformer_weights, bool use_prefix_cache = true);
 
 #if NCNN_VULKAN
 bool has_separate_host_heap(const ncnn::VulkanDevice* vkdev);
@@ -74,6 +75,6 @@ uint64_t get_gpu_memory_budget(const RuntimeConfig& config, const ncnn::VulkanDe
 
 ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage);
 
-bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& config, ModelStage stage);
+bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& config, ModelStage stage, TransformerLoRA* lora = nullptr, TransformerPart part = TransformerPart::Input);
 
 } // namespace qwenimage

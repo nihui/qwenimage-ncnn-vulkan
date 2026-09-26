@@ -123,6 +123,22 @@ Image editing
 qwenimage-ncnn-vulkan -i input.png -p "Change the clothes to a blue jacket." -o output.png
 ```
 
+Load a safetensors LoRA, including PEFT `lora_A` / `lora_B` adapters
+
+```shell
+qwenimage-ncnn-vulkan --lora qwen-image-style.safetensors --lora-scale 0.8 -p "A red flower." -o output.png
+```
+
+Some Qwen Fun Acc adapters use a fixed step schedule. For example, the 4-step adapter requires `-l 4`.
+
+ControlNet generation
+
+```shell
+qwenimage-ncnn-vulkan -c control.png --controlnet models/qwenimage21/controlnet/controlnet.ncnn.param --control-scale 1.0 -p "A red flower." -o output.png
+```
+
+The `-c` condition image and `--controlnet` model must be used together. ControlNet can also be combined with `-i` image editing and a LoRA. The ControlNet model uses an ncnn `.param`/`.bin` pair and can be used with Canny, depth, grayscale, HED, lineart, MLSD, pose and scribble condition images.
+
 Multiple reference images
 
 ```shell
@@ -162,6 +178,11 @@ Usage: qwenimage-ncnn-vulkan -p prompt -o outfile [options]...
   -w guidance-scale    true CFG scale (default=1.0)
   -o output-path       output image path (default=out.png)
   -i input-image       reference image for editing (repeat 1 to 10 times)
+  -c control-image     ControlNet condition image (optional)
+  --controlnet path    ControlNet ncnn param file (optional)
+  --control-scale val  ControlNet strength (default=1.0)
+  --lora path          LoRA or Qwen Fun Acc safetensors adapter (optional)
+  --lora-scale value   LoRA strength (default=1.0)
   -s image-size        image resolution (default=1024,1024)
   -l steps             denoise steps (default=40)
   -r random-seed       random seed (default=42)

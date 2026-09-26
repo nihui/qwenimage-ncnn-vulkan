@@ -166,15 +166,84 @@ bool make_transformer_kvcache_param(const std::string& path, std::string& param)
     return true;
 }
 
-bool load_transformer_blocks_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& config)
+bool append_control_projection_graph(std::string& param, float control_scale)
+{
+    std::istringstream input(param);
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(input, line))
+        lines.push_back(line);
+    if (lines.size() < 2)
+        return false;
+
+    int layers = 0;
+    int blobs = 0;
+    std::istringstream counts(lines[1]);
+    if (!(counts >> layers >> blobs))
+        return false;
+    char scale[64];
+    std::snprintf(scale, sizeof(scale), "%.9g", control_scale);
+    std::vector<std::string> extra;
+    extra.push_back("Input control_base_input_layer 0 1 control_base_input");
+    extra.push_back("Input control_before_input_layer 0 1 control_before_input");
+    extra.push_back("BinaryOp control_add_before 2 1 control_before_input control_base_input control_add_before_output 0=0");
+    for (int i = 0; i < 16; i++)
+    {
+        char hint[32];
+        char scaled[40];
+        char block[32];
+        char scale_layer[40];
+        char add[40];
+        std::snprintf(hint, sizeof(hint), "control_after_%02d_input", i);
+        std::snprintf(scaled, sizeof(scaled), "control_scaled_%02d", i);
+        std::snprintf(block, sizeof(block), "b%02d_out", i * 2);
+        std::snprintf(scale_layer, sizeof(scale_layer), "control_scale_%02d", i);
+        std::snprintf(add, sizeof(add), "control_add_%02d", i);
+        extra.push_back(std::string("Input ") + hint + "_layer 0 1 " + hint);
+        extra.push_back(std::string("BinaryOp ") + scale_layer + " 1 1 " + hint + " " + scaled
+                        + " 0=2 1=1 2=" + scale);
+        extra.push_back(std::string("BinaryOp ") + add + " 2 1 " + block + " " + scaled
+                        + " control_add_" + (i < 10 ? "0" : "") + std::to_string(i) + "_output 0=0");
+    }
+    std::ostringstream output;
+    output << lines[0] << '\n' << layers + (int)extra.size() << ' '
+           << blobs + (int)extra.size() << '\n';
+    for (size_t i = 2; i < lines.size(); i++)
+        output << lines[i] << '\n';
+    for (const std::string& extra_line : extra)
+        output << extra_line << '\n';
+    param = output.str();
+    return true;
+}
+
+bool load_transformer_blocks_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& config, TransformerLoRA* lora, bool controlnet, float control_scale)
 {
     net.opt = make_ncnn_option(config, ModelStage::Transformer);
     net.opt.lightmode = true;
 
     std::string param;
-    if (!make_transformer_kvcache_param(files.param, param))
+    if (controlnet)
+    {
+        std::ifstream file(files.param);
+        if (!file)
+            return false;
+        std::ostringstream contents;
+        contents << file.rdbuf();
+        param = contents.str();
+        if (param.empty() || !append_control_projection_graph(param, control_scale))
+        {
+            fprintf(stderr, "failed to prepare in-memory ControlNet graph %s\n", files.param.c_str());
+            return false;
+        }
+    }
+    else if (!make_transformer_kvcache_param(files.param, param))
     {
         fprintf(stderr, "failed to prepare transformer KV-cache param %s\n", files.param.c_str());
+        return false;
+    }
+    if (lora && register_transformer_lora(net, lora, TransformerPart::Blocks) != 0)
+    {
+        fprintf(stderr, "failed to register transformer block LoRA layers\n");
         return false;
     }
     if (net.load_param_mem(param.c_str()) != 0)
@@ -264,7 +333,7 @@ bool validate_edit_model_paths(const ModelPaths& paths, std::string* error)
     return validate_model_paths(paths, error);
 }
 
-bool get_transformer_weight_size(const ModelPaths& paths, uint64_t& bytes)
+bool get_transformer_weight_size(const ModelPaths& paths, uint64_t& bytes, const std::string& controlnet_param, const std::string& lora_path)
 {
     bytes = 0;
     for (const ModelFiles* files : {&paths.transformer_input, &paths.transformer_blocks, &paths.transformer_output})
@@ -277,6 +346,38 @@ bool get_transformer_weight_size(const ModelPaths& paths, uint64_t& bytes)
             return false;
         }
         bytes += size;
+    }
+    if (!controlnet_param.empty())
+    {
+        std::string controlnet_bin = controlnet_param;
+        const std::string suffix = ".param";
+        if (controlnet_bin.size() < suffix.size()
+            || controlnet_bin.compare(controlnet_bin.size() - suffix.size(), suffix.size(), suffix) != 0)
+        {
+            fprintf(stderr, "ControlNet path must point to a .param file\n");
+            return false;
+        }
+        controlnet_bin.replace(controlnet_bin.size() - suffix.size(), suffix.size(), ".bin");
+        std::error_code error;
+        const uintmax_t size = std::filesystem::file_size(controlnet_bin, error);
+        if (error || size > UINT64_MAX - bytes)
+        {
+            fprintf(stderr, "failed to get executable ControlNet model size %s\n", controlnet_bin.c_str());
+            return false;
+        }
+        bytes += size;
+    }
+    if (!lora_path.empty())
+    {
+        std::error_code error;
+        const uintmax_t size = std::filesystem::file_size(lora_path, error);
+        // safetensors LoRA tensors are expanded to float32 Mat weights
+        if (error || size > (UINT64_MAX - bytes) / 2)
+        {
+            fprintf(stderr, "failed to estimate LoRA adapter weight size %s\n", lora_path.c_str());
+            return false;
+        }
+        bytes += (uint64_t)size * 2;
     }
     return true;
 }
@@ -346,34 +447,82 @@ bool QwenModelSet::load_vae_decoder(const ModelPaths& paths, const RuntimeConfig
     return true;
 }
 
-bool QwenModelSet::load_transformer(const ModelPaths& paths, const RuntimeConfig& config)
+bool QwenModelSet::load_transformer(const ModelPaths& paths, const RuntimeConfig& config, const std::string& lora_path, float lora_scale, const std::string& controlnet_path, float control_scale)
 {
     unload_transformer();
+    if (!lora_path.empty())
+    {
+        transformer_lora.reset(new TransformerLoRA(lora_path, lora_scale));
+        if (!transformer_lora->valid())
+        {
+            fprintf(stderr, "failed to load transformer LoRA: %s\n", transformer_lora->error().c_str());
+            unload_transformer();
+            return false;
+        }
+    }
+
+    RuntimeConfig transformer_config = config;
+    if (!controlnet_path.empty())
+    {
+        transformer_controlnet.reset(new ncnn::Net());
+        transformer_controlnet->opt = make_ncnn_option(transformer_config, ModelStage::Transformer);
+        transformer_controlnet->opt.lightmode = true;
+        std::string controlnet_bin = controlnet_path;
+        const std::string suffix = ".param";
+        if (controlnet_bin.size() < suffix.size()
+            || controlnet_bin.compare(controlnet_bin.size() - suffix.size(), suffix.size(), suffix) != 0)
+        {
+            fprintf(stderr, "ControlNet path must point to a .param file\n");
+            unload_transformer();
+            return false;
+        }
+        controlnet_bin.replace(controlnet_bin.size() - suffix.size(), suffix.size(), ".bin");
+        if (transformer_controlnet->load_param(controlnet_path.c_str()) != 0
+            || transformer_controlnet->load_model(controlnet_bin.c_str()) != 0)
+        {
+            fprintf(stderr, "failed to load executable ControlNet graph %s\n", controlnet_path.c_str());
+            unload_transformer();
+            return false;
+        }
+        fprintf(stderr, "ControlNet weights = %s-backed\n",
+                transformer_config.use_weights_in_host_memory ? "host" : "device");
+    }
+
     transformer_input.reset(new ncnn::Net());
-    if (!load_net(*transformer_input, paths.transformer_input, config,
-                  ModelStage::Transformer))
+    if (!load_net(*transformer_input, paths.transformer_input, transformer_config,
+                  ModelStage::Transformer, transformer_lora.get(), TransformerPart::Input))
     {
         unload_transformer();
         return false;
     }
     transformer_blocks.reset(new ncnn::Net());
-    if (!load_transformer_blocks_net(*transformer_blocks, paths.transformer_blocks, config))
+    if (!load_transformer_blocks_net(*transformer_blocks, paths.transformer_blocks,
+                                     transformer_config, transformer_lora.get(),
+                                     !controlnet_path.empty(), control_scale))
     {
         unload_transformer();
         return false;
     }
     transformer_output.reset(new ncnn::Net());
-    if (!load_net(*transformer_output, paths.transformer_output, config,
-                  ModelStage::Transformer))
+    if (!load_net(*transformer_output, paths.transformer_output, transformer_config,
+                  ModelStage::Transformer, transformer_lora.get(), TransformerPart::Output))
     {
         unload_transformer();
         return false;
     }
+    if (transformer_lora && transformer_lora->matched_targets() != transformer_lora->expected_targets())
+    {
+        fprintf(stderr, "LoRA matched %zu of %zu projection targets\n",
+                transformer_lora->matched_targets(), transformer_lora->expected_targets());
+        unload_transformer();
+        return false;
+    }
 #if NCNN_VULKAN
-    // share one inference pool across all transformer graphs
     set_stage_vkallocators(*transformer_input, transformer_blob_vkallocator, transformer_staging_vkallocator);
     set_stage_vkallocators(*transformer_blocks, transformer_blob_vkallocator, transformer_staging_vkallocator);
     set_stage_vkallocators(*transformer_output, transformer_blob_vkallocator, transformer_staging_vkallocator);
+    if (transformer_controlnet)
+        set_stage_vkallocators(*transformer_controlnet, transformer_blob_vkallocator, transformer_staging_vkallocator);
 #endif
     return true;
 }
@@ -409,9 +558,11 @@ void QwenModelSet::unload_vae_decoder()
 void QwenModelSet::unload_transformer()
 {
     // release the large block graph before the small input/output graphs
+    transformer_controlnet.reset();
     transformer_blocks.reset();
     transformer_input.reset();
     transformer_output.reset();
+    transformer_lora.reset();
 #if NCNN_VULKAN
     transformer_blob_vkallocator.reset();
     transformer_staging_vkallocator.reset();
