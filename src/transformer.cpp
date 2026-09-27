@@ -6,6 +6,7 @@
 #include <cmath>
 #include <climits>
 #include <cstring>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <memory>
@@ -22,6 +23,16 @@ constexpr int kRopeDim = 64;
 constexpr int kModulationDim = 16384;
 constexpr int kTheta = 10000;
 constexpr int kTransformerBlocks = 32;
+
+float round_to_bfloat16(float value)
+{
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    bits += 0x7fffu + ((bits >> 16) & 1u);
+    bits &= 0xffff0000u;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
 
 bool is_matrix(const ncnn::Mat& value, int width, int height)
 {
@@ -490,6 +501,11 @@ bool QwenTransformer::run_time_condition(float timestep, ncnn::Mat& modulation, 
     ncnn::Mat time(1);
     if (time.empty())
         return false;
+    if (models_.transformer_lora && models_.transformer_lora->has_pdd_output())
+    {
+        const float timestep_scaled = round_to_bfloat16(timestep * 1000.f);
+        timestep = round_to_bfloat16(timestep_scaled / 1000.f);
+    }
     time[0] = timestep;
     ncnn::Extractor ex = models_.transformer_input->create_extractor();
     if (ex.input("in2", time) != 0 || ex.extract("out1", modulation) != 0 || ex.extract("out2", temb) != 0)

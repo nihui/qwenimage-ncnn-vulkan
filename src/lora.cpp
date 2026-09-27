@@ -1243,7 +1243,13 @@ bool TransformerLoRA::load_norm_weight(TransformerPart part,
         return false;
     float* ptr = weight;
     for (int i = 0; i < size; i++)
-        ptr[i] = impl_->tensor_value(*info, (size_t)i);
+    {
+        float value = impl_->tensor_value(*info, (size_t)i);
+        // QwenImage21ZeroCenterRMSNorm stores scale minus one
+        if (key == "txt_in.text_norm.weight")
+            value += 1.f;
+        ptr[i] = value;
+    }
     return true;
 }
 
