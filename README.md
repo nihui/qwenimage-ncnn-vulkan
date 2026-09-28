@@ -259,19 +259,7 @@ cmake --build . -j 4
 </td>
 </tr>
 <tr>
-<td width="33%">
-
-<details>
-<summary>expand for full command</summary>
-
-```qwenimage-ncnn-vulkan.exe -p "A highly realistic candid street photograph taken on a rainy evening in a dense East Asian city. A young woman in a dark charcoal coat walks alone along a narrow city sidewalk, holding a transparent umbrella. She is caught naturally in mid-step rather than posing for the camera. Her expression is calm and slightly thoughtful. Her face, skin texture, hair, hands, clothing folds, and proportions should look completely natural and anatomically correct. The street has just been soaked by rain. Wet asphalt and stone pavement reflect warm storefront lights, traffic signals, and subtle red, amber, and cool white highlights. Small puddles create imperfect broken reflections. Raindrops cling to the umbrella, glass windows, parked bicycles, metal railings, and street signs. A few distant pedestrians carrying umbrellas appear farther down the street, softly blurred by atmospheric perspective. The environment should feel lived-in and authentic: small restaurants, convenience stores, apartment entrances, utility boxes, bicycles, subtle signage, window condensation, slightly weathered walls, and ordinary urban details. Avoid an overly clean or staged environment. Use natural mixed lighting from shop windows, street lamps, and distant traffic. The woman's face is softly illuminated by warm reflected storefront light from one side, while the surrounding street remains slightly cool and subdued. Preserve realistic highlight roll-off and shadow detail. No dramatic studio lighting. Shot as professional full-frame street photography with a 50mm lens at approximately f/2.0, eye-level perspective, shallow but realistic depth of field. The woman is in sharp focus while the distant background gradually falls out of focus. Use subtle natural lens characteristics, realistic bokeh, mild high-ISO grain, and a restrained documentary color palette. The composition should feel spontaneous and observational, as if captured during a real evening walk. Slight asymmetry, natural visual clutter, believable perspective, realistic scale, and imperfect everyday details are important. Photorealistic skin, realistic hair strands, physically plausible wet surfaces, accurate reflections, natural fabric texture, realistic glass and metal materials, true-to-life lighting, high dynamic range, fine photographic detail. The final image should look like an authentic high-end documentary photograph captured with a real camera, not a digital painting or AI illustration. Avoid beauty-retouched skin, plastic-looking faces, excessive skin smoothing, exaggerated cinematic lighting, oversaturated neon colors, cyberpunk aesthetics, fantasy elements, artificial symmetry, excessive bokeh, distorted anatomy, malformed hands, duplicated people, floating objects, unrealistic reflections, overly sharp HDR, CGI rendering, 3D render appearance, illustration, anime, watercolor, text overlays, logos, or watermarks." -r 85854995 -s 1280,720```
-
-</details>
-
-![qwenimage](images/street.jpg)
-
-</td>
-<td width="33%">
+<td width="66%" colspan="2">
 
 <details>
 <summary>expand for full command</summary>
