@@ -218,6 +218,7 @@ cmake --build . -j 4
 
 ## Sample Images
 
+### Text to image
 
 <table width="100%">
 <tr>
@@ -271,6 +272,97 @@ cmake --build . -j 4
 ![qwenimage](images/street.jpg)
 
 </td>
+</tr>
+</table>
+
+<table width="100%">
+<tr>
+<td width="38%">
+
+<details>
+<summary>expand for full command</summary>
+
+```qwenimage-ncnn-vulkan.exe -p "A highly realistic wildlife photograph of a red fox standing quietly in a snowy winter forest at dawn. The fox is the clear main subject, shown in a natural three-quarter view at eye level, with its head slightly turned toward the camera and an alert yet calm expression. Its anatomy and proportions are completely natural and accurate. Render exceptionally detailed reddish-orange fur with individual strands, soft dense winter undercoat, subtle color variation, white fur on the chest and muzzle, darker legs, black-tipped ears, long whiskers, moist nose, and bright amber-brown eyes with realistic reflections. Fine snowflakes cling naturally to the fur around its back, ears, and muzzle. The fox stands on fresh powder snow with believable paw impressions and slightly compressed snow beneath its feet. Surround it with a quiet conifer forest of pine and spruce trees, snow-covered branches, scattered dry grass, fallen twigs, and soft morning mist between the trees. Warm golden sunrise light filters gently through the cold blue-gray forest, creating subtle rim light along the fox’s fur while preserving natural shadow detail and realistic color. Use authentic professional wildlife photography aesthetics, shot with a full-frame camera and a 300mm telephoto lens at approximately f/4, with the fox sharply focused and the distant forest softly blurred by natural depth of field. Include realistic lens compression, delicate background bokeh, subtle high-ISO grain, physically plausible lighting, accurate snow texture, and restrained natural color grading. The scene should feel spontaneous and documentary-like, as if captured by a wildlife photographer in a real forest, not staged or posed. The final image must look indistinguishable from a real high-resolution wildlife photograph. Avoid cartoon style, illustration, anime, fantasy elements, anthropomorphic features, smiling human-like expressions, exaggerated eyes, malformed anatomy, extra limbs, duplicate animals, overly smooth fur, plastic texture, excessive HDR, oversaturated colors, artificial studio lighting, CGI, 3D render appearance, text, logos, borders, or watermarks." -r 1462200376```
+
+</details>
+
+![qwenimage](images/fox.jpg)
+
+</td>
+<td width="62%">
+
+<details>
+<summary>expand for full command</summary>
+
+```qwenimage-ncnn-vulkan.exe -p "An authentic Minecraft gameplay screenshot in first-person view, 16:9 composition, showing a beautiful survival world at golden hour. The player stands on a grassy hillside overlooking a detailed valley with a winding river, dense oak and birch forests, terraced farmland, a small village with wooden and stone houses, and a cozy player-built survival base with warm lantern light glowing from the windows. In the distance, dramatic blocky mountains rise above the valley, with patches of snow near the peaks and soft square clouds drifting through a warm orange-blue sunset sky. Include recognizable Minecraft-style voxel geometry, cubic blocks, pixelated textures, blocky trees, grass, stone, water, crops, fences, torches, lanterns, and paths, all constructed entirely from discrete cube-based blocks with no smooth or realistic geometry. Add a few passive mobs such as cows, sheep, and chickens naturally distributed around the landscape. The river reflects the evening sky with the characteristic block-based Minecraft water appearance. Use attractive but believable in-game lighting with soft sunlight, ambient shadows, subtle volumetric rays, and gentle water reflections, resembling Minecraft with high-quality shaders while still clearly preserving the original blocky game aesthetic. Show a convincing first-person game HUD: a small white crosshair at the center, pixel-art hearts and hunger icons, an experience bar, and a nine-slot hotbar along the bottom edge containing recognizable tools and building materials, with no additional menus or text. The image must look exactly like a high-quality screenshot captured during actual Minecraft gameplay, not concept art, not a painting, not photorealistic terrain, and not a generic voxel illustration. Preserve strict cubic geometry, pixelated textures, consistent block scale, coherent world generation, believable Minecraft construction, and accurate first-person perspective. Avoid rounded terrain, smooth realistic trees, realistic human characters, non-blocky objects, excessive cinematic blur, depth-of-field photography, text overlays, logos, watermarks, or any interface elements other than the normal gameplay HUD." -r 442296602 -s 1280,720```
+
+</details>
+
+![qwenimage](images/mc.jpg)
+
+</td>
+</tr>
+</table>
+
+### Image editing
+
+<table width="100%">
+<tr>
+<td colspan="4">
+
+<details>
+<summary>expand for full command</summary>
+
+```zimage-ncnn-vulkan.exe -i dafeiyu.jpg -p "Edit the provided character reference sheet while strictly preserving the original character identity and the three-view layout. Keep exactly the same chibi girl character, including her face, facial expression, large blue eyes, dark blue hair color, hairstyle, bangs, ahoge, hair length, body proportions, and overall silhouette. Strictly preserve her original height-to-head ratio and overall chibi proportions. Do not make her taller, shorter, slimmer, or more mature-looking. The two large fish-fin ornaments above the left and right sides of her head must be preserved exactly as key design features. Also preserve the fish tail behind her body as an essential original feature. Keep these elements clearly visible and fully integrated into the new design in all appropriate views. Preserve the exact three-view character sheet layout: front view, side view, and back view. Keep the same poses, viewing angles, spacing, scale, framing, and sheet arrangement as in the input image. Replace her entire navy-blue maid outfit with an elegant traditional Chinese hanfu-inspired outfit. The new outfit should use a refined blue-and-white color palette that harmonizes with her original hair color. Design it with a white cross-collar inner garment, pale blue layered sleeves, a deep navy flowing outer robe, a high-waisted pleated skirt, delicate embroidered wave and cloud patterns, and subtle gold decorative details. Add a small stylized whale motif to the waist sash as a reference to the original character design. Remove the maid apron, maid collar, lace cuffs, maid skirt, and maid headband, but keep the fish-fin ornaments above both sides of the head. Integrate them naturally with the redesigned outfit. The fish tail behind the character must also remain unchanged in spirit and remain clearly visible. The edited costume must be geometrically consistent across all three views. Every garment layer, ribbon, sash, sleeve, embroidery pattern, accessory, fish-fin ornament, and tail placement should correspond correctly between the front, side, and back views. The back view must show the correct continuation of the robe, sash, skirt folds, hair, fish-fin ornaments, and tail. Preserve the original cute chibi anime illustration style, clean line art, soft cel shading, smooth color transitions, crisp outlines, and polished character-sheet appearance. Keep the original plain light background clean and unchanged. This should look like the same character wearing a completely redesigned traditional Chinese outfit, not a newly generated character. Do not change the character's face, eyes, hairstyle, hair color, fish-fin ornaments, fish tail, body proportions, height ratio, pose, expression, viewpoint, framing, image dimensions, or three-view arrangement. Do not add extra characters, extra limbs, extra accessories, text, labels, logos, decorative backgrounds, scenery, or watermarks." -r 2096415905 -s 1024,512```
+
+</details>
+
+</td>
+</tr>
+<tr>
+<td width="30%" valign="middle"><img src="images/dafeiyu.jpg"></td>
+<td width="1%" align="center" valign="middle">➡️</td>
+<td width="30%" valign="middle"><img src="images/dafeiyu2.jpg"></td>
+</tr>
+</table>
+
+<table width="100%">
+<tr>
+<td colspan="4">
+
+<details>
+<summary>expand for full command</summary>
+
+```zimage-ncnn-vulkan.exe -i dafeiyu.jpg -p "Use the provided reference image as the primary character design reference. Generate a completely new illustration featuring the same blue-haired chibi girl from the reference image. Preserve her character identity and all important recognizable design features, while creating a new pose, camera angle, composition, and environment. The character must retain the same dark cobalt-blue hair, long wavy hairstyle, distinctive bangs, single curved ahoge, large blue gradient eyes, small round face, blue-and-white lace maid headband, blue ribbon hair ornaments, navy-and-white maid dress, white frilled apron with the small blue whale emblem, gold decorative accents, and the distinctive small blue whale-tail feature behind her. Keep her proportions and visual identity consistent with the reference: very cute chibi proportions, oversized head, small body, short limbs, soft rounded facial features, and a gentle, slightly quiet expression. Do NOT reproduce the original three-view character sheet. Instead, create a single polished full-scene illustration. Place the character in a charming seaside café overlooking the ocean. She is standing in a natural three-quarter view, carrying a small silver serving tray with a cup of tea and a slice of cake. Her body is turned slightly toward the viewer, with one foot stepping forward, giving the pose a lively but gentle sense of motion. Behind her is a bright coastal café terrace with white wooden tables, blue fabric awnings, potted flowers, glass windows, and a sparkling blue sea in the distance. A light ocean breeze gently moves the ends of her long hair, her ribbons, and the frills of her dress. Small distant seabirds and soft white clouds add atmosphere without distracting from the character. Use soft daylight, clear blue sky, subtle warm sunlight, delicate shadows, and gentle reflected light from the sea. The lighting should make the blue hair and navy costume feel vivid while preserving soft pastel harmony. Maintain the same cute anime illustration style as the reference image: clean expressive line art, polished cel shading, soft gradients, crisp edges, carefully rendered fabric folds, lace details, hair highlights, and charming miniature character proportions. The character should clearly look like the exact same character from the reference image, not merely a similar blue-haired maid. Preserve the original hairstyle silhouette, facial design, eye color, costume motifs, accessories, whale emblem, and whale-tail feature. Create a cohesive, finished illustration rather than a model sheet or concept sheet. Use a balanced vertical composition with the character as the clear focal point and enough environmental detail to demonstrate a completely new scene. Do not add additional main characters. Do not redesign the character. Do not change her hair color, eye color, hairstyle, maid outfit identity, whale motif, or chibi proportions. Do not reproduce the front-side-back layout from the reference. Do not use a plain white background. Do not add text, labels, logos, signatures, or watermarks." -r 2096415905 -s 1024,512```
+
+</details>
+
+</td>
+</tr>
+<tr>
+<td width="30%" valign="middle"><img src="images/dafeiyu.jpg"></td>
+<td width="1%" align="center" valign="middle">➡️</td>
+<td width="30%" valign="middle"><img src="images/dafeiyu-ch.jpg"></td>
+</tr>
+</table>
+
+<table width="100%">
+<tr>
+<td colspan="4">
+
+<details>
+<summary>expand for full command</summary>
+
+```zimage-ncnn-vulkan.exe -i beauty.jpg -i dafeiyu.jpg -p "Use both provided reference images together. Image A is the primary scene and identity reference: a photorealistic young woman in a convenience store, originally holding a milk bottle. Image B is the character design reference: a blue-haired chibi maid character shown in front, side, and back views. Generate a single finished image that keeps the woman, convenience-store environment, and overall photographic realism of Image A, while using Image B as the design reference for a new plush toy. Transform the character from Image B into a cute high-quality plush doll. The plush toy must clearly preserve the character's identity and recognizable features: long blue hair, large blue eyes, the maid headband, blue ribbon ornaments, navy-and-white maid outfit, white apron with the whale emblem, gold decorative details, and the small whale-tail feature. Convert all of these features into a soft stuffed-plush form with realistic fabric texture, embroidered facial features, visible plush seams, soft stuffing, rounded volume, and a premium cuddly toy appearance. In the final image, completely replace the milk bottle in the woman's hands with this plush toy. She is holding the plush gently with both hands and bringing it close to her face so that her cheek is softly touching the plush's face. Change her expression to clearly happy, warm, delighted, and affectionate, as if she loves the plush. The plush should also have a cheerful, adorable, happy expression. Preserve the woman's identity, hairstyle, facial structure, natural appearance, clothing, pose context, and the realistic convenience-store setting from Image A. Keep the refrigerated shelves, indoor lighting, perspective, framing, and casual candid-photography feeling. The result should remain photorealistic for the woman and environment, while the plush should look like a believable real-world stuffed toy physically present in the scene. Keep the woman as the main subject, keep the convenience-store background from Image A, make the plush fully replace the bottle, make the plush touch the woman's cheek naturally, and faithfully preserve the character design traits from Image B. Use realistic photography, natural indoor lighting, soft fabric, embroidery, seams, stuffed volume, subtle contact shadows, believable hand-to-plush interaction, and a cute heartwarming mood. Do not generate the original bottle, do not generate a flat illustration, do not reproduce the three-view character sheet, do not redesign the character into a different costume or color scheme, and do not add extra people, extra toys, text, logos, labels, or watermarks." -r 122747264```
+
+</details>
+
+</td>
+</tr>
+<tr>
+<td width="60%" valign="middle"><img src="images/beauty.jpg" width="50%"><img src="images/dafeiyu.jpg" width="50%"></td>
+<td width="1%" align="center" valign="middle">➡️</td>
+<td width="30%" valign="middle"><img src="images/beauty-dafeiyu.jpg"></td>
 </tr>
 </table>
 
