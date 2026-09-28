@@ -18,7 +18,7 @@ qwenimage-ncnn-vulkan uses [ncnn project](https://github.com/Tencent/ncnn) as th
 - Full **BF16** model precision, no quantization
 - Works with **2GB** VRAM, no CPU offload
 - **NVIDIA / AMD / Intel / Apple Silicon**
-- Windows / Linux / macOS
+- **Windows / Linux / macOS**
 - **CPU** inference is also supported
 - **No** CUDA / PyTorch / Python dependency
 - **Portable** standalone executable
