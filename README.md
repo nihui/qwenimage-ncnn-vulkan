@@ -221,7 +221,7 @@ cmake --build . -j 4
 
 <table width="100%">
 <tr>
-<td width="33%">
+<td width="32%">
 
 <details>
 <summary>expand for full command</summary>
@@ -233,7 +233,7 @@ cmake --build . -j 4
 ![qwenimage](images/beauty.jpg)
 
 </td>
-<td width="33%">
+<td width="32%">
 
 <details>
 <summary>expand for full command</summary>
@@ -245,7 +245,7 @@ cmake --build . -j 4
 ![qwenimage](images/poster.jpg)
 
 </td>
-<td width="34%" rowspan="2">
+<td width="36%" rowspan="2">
 
 <details>
 <summary>expand for full command</summary>
@@ -259,7 +259,7 @@ cmake --build . -j 4
 </td>
 </tr>
 <tr>
-<td width="66%" colspan="2">
+<td width="64%" colspan="2">
 
 <details>
 <summary>expand for full command</summary>
