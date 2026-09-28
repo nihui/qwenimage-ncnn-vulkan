@@ -1,6 +1,6 @@
 # Qwen-Image-2.1 ncnn Vulkan
 
-:exclamation: :exclamation: :exclamation: This software is in the early development stage, it may bite your cat
+:exclamation: :exclamation: :exclamation: More features and optimizations in progress
 
 ![CI](https://github.com/nihui/qwenimage-ncnn-vulkan/workflows/CI/badge.svg)
 ![download](https://img.shields.io/github/downloads/nihui/qwenimage-ncnn-vulkan/total.svg)
@@ -33,7 +33,7 @@ qwenimage-ncnn-vulkan uses [ncnn project](https://github.com/Tencent/ncnn) as th
 - **Dynamic** output resolution
 - **Batch** generation
 - Qwen-Image-2.1-Fun-Acc-LoRAs (**4steps**)
-- **ControlNet**
+- **ControlNet** (pose, canny, etc.)
 
 </td>
 </tr>
@@ -66,6 +66,9 @@ Put it under the `models/` directory when running from the source tree, or pass 
 qwenimage-ncnn-vulkan
 models/
     qwenimage21/
+        controlnet/
+            controlnet.ncnn.param
+            controlnet.ncnn.bin
         processor/
             vocab.txt
             merges.txt
@@ -259,7 +262,7 @@ cmake --build . -j 4
 
 <table width="100%">
 <tr>
-<td width="32%">
+<td width="31%">
 
 <details>
 <summary>expand for full command</summary>
@@ -271,7 +274,7 @@ cmake --build . -j 4
 ![qwenimage](images/beauty.jpg)
 
 </td>
-<td width="32%">
+<td width="31%">
 
 <details>
 <summary>expand for full command</summary>
@@ -283,7 +286,7 @@ cmake --build . -j 4
 ![qwenimage](images/poster.jpg)
 
 </td>
-<td width="36%" rowspan="2">
+<td width="38%" rowspan="2">
 
 <details>
 <summary>expand for full command</summary>
@@ -297,7 +300,7 @@ cmake --build . -j 4
 </td>
 </tr>
 <tr>
-<td width="64%" colspan="2">
+<td width="62%" colspan="2">
 
 <details>
 <summary>expand for full command</summary>
@@ -314,7 +317,7 @@ cmake --build . -j 4
 
 <table width="100%">
 <tr>
-<td width="38%">
+<td width="37%">
 
 <details>
 <summary>expand for full command</summary>
@@ -326,7 +329,7 @@ cmake --build . -j 4
 ![qwenimage](images/fox.jpg)
 
 </td>
-<td width="62%">
+<td width="63%">
 
 <details>
 <summary>expand for full command</summary>
@@ -395,7 +398,7 @@ https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs
 <details>
 <summary>expand for full command</summary>
 
-```zimage-ncnn-vulkan.exe -i dafeiyu.jpg -p "Edit the provided character reference sheet while strictly preserving the original character identity and the three-view layout. Keep exactly the same chibi girl character, including her face, facial expression, large blue eyes, dark blue hair color, hairstyle, bangs, ahoge, hair length, body proportions, and overall silhouette. Strictly preserve her original height-to-head ratio and overall chibi proportions. Do not make her taller, shorter, slimmer, or more mature-looking. The two large fish-fin ornaments above the left and right sides of her head must be preserved exactly as key design features. Also preserve the fish tail behind her body as an essential original feature. Keep these elements clearly visible and fully integrated into the new design in all appropriate views. Preserve the exact three-view character sheet layout: front view, side view, and back view. Keep the same poses, viewing angles, spacing, scale, framing, and sheet arrangement as in the input image. Replace her entire navy-blue maid outfit with an elegant traditional Chinese hanfu-inspired outfit. The new outfit should use a refined blue-and-white color palette that harmonizes with her original hair color. Design it with a white cross-collar inner garment, pale blue layered sleeves, a deep navy flowing outer robe, a high-waisted pleated skirt, delicate embroidered wave and cloud patterns, and subtle gold decorative details. Add a small stylized whale motif to the waist sash as a reference to the original character design. Remove the maid apron, maid collar, lace cuffs, maid skirt, and maid headband, but keep the fish-fin ornaments above both sides of the head. Integrate them naturally with the redesigned outfit. The fish tail behind the character must also remain unchanged in spirit and remain clearly visible. The edited costume must be geometrically consistent across all three views. Every garment layer, ribbon, sash, sleeve, embroidery pattern, accessory, fish-fin ornament, and tail placement should correspond correctly between the front, side, and back views. The back view must show the correct continuation of the robe, sash, skirt folds, hair, fish-fin ornaments, and tail. Preserve the original cute chibi anime illustration style, clean line art, soft cel shading, smooth color transitions, crisp outlines, and polished character-sheet appearance. Keep the original plain light background clean and unchanged. This should look like the same character wearing a completely redesigned traditional Chinese outfit, not a newly generated character. Do not change the character's face, eyes, hairstyle, hair color, fish-fin ornaments, fish tail, body proportions, height ratio, pose, expression, viewpoint, framing, image dimensions, or three-view arrangement. Do not add extra characters, extra limbs, extra accessories, text, labels, logos, decorative backgrounds, scenery, or watermarks." -r 2096415905 -s 1024,512```
+```qwenimage-ncnn-vulkan.exe -i dafeiyu.jpg -p "Edit the provided character reference sheet while strictly preserving the original character identity and the three-view layout. Keep exactly the same chibi girl character, including her face, facial expression, large blue eyes, dark blue hair color, hairstyle, bangs, ahoge, hair length, body proportions, and overall silhouette. Strictly preserve her original height-to-head ratio and overall chibi proportions. Do not make her taller, shorter, slimmer, or more mature-looking. The two large fish-fin ornaments above the left and right sides of her head must be preserved exactly as key design features. Also preserve the fish tail behind her body as an essential original feature. Keep these elements clearly visible and fully integrated into the new design in all appropriate views. Preserve the exact three-view character sheet layout: front view, side view, and back view. Keep the same poses, viewing angles, spacing, scale, framing, and sheet arrangement as in the input image. Replace her entire navy-blue maid outfit with an elegant traditional Chinese hanfu-inspired outfit. The new outfit should use a refined blue-and-white color palette that harmonizes with her original hair color. Design it with a white cross-collar inner garment, pale blue layered sleeves, a deep navy flowing outer robe, a high-waisted pleated skirt, delicate embroidered wave and cloud patterns, and subtle gold decorative details. Add a small stylized whale motif to the waist sash as a reference to the original character design. Remove the maid apron, maid collar, lace cuffs, maid skirt, and maid headband, but keep the fish-fin ornaments above both sides of the head. Integrate them naturally with the redesigned outfit. The fish tail behind the character must also remain unchanged in spirit and remain clearly visible. The edited costume must be geometrically consistent across all three views. Every garment layer, ribbon, sash, sleeve, embroidery pattern, accessory, fish-fin ornament, and tail placement should correspond correctly between the front, side, and back views. The back view must show the correct continuation of the robe, sash, skirt folds, hair, fish-fin ornaments, and tail. Preserve the original cute chibi anime illustration style, clean line art, soft cel shading, smooth color transitions, crisp outlines, and polished character-sheet appearance. Keep the original plain light background clean and unchanged. This should look like the same character wearing a completely redesigned traditional Chinese outfit, not a newly generated character. Do not change the character's face, eyes, hairstyle, hair color, fish-fin ornaments, fish tail, body proportions, height ratio, pose, expression, viewpoint, framing, image dimensions, or three-view arrangement. Do not add extra characters, extra limbs, extra accessories, text, labels, logos, decorative backgrounds, scenery, or watermarks." -r 2096415905 -s 1024,512```
 
 </details>
 
@@ -412,7 +415,7 @@ https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs
 <details>
 <summary>expand for full command</summary>
 
-```zimage-ncnn-vulkan.exe -i dafeiyu.jpg -p "Use the provided reference image as the primary character design reference. Generate a completely new illustration featuring the same blue-haired chibi girl from the reference image. Preserve her character identity and all important recognizable design features, while creating a new pose, camera angle, composition, and environment. The character must retain the same dark cobalt-blue hair, long wavy hairstyle, distinctive bangs, single curved ahoge, large blue gradient eyes, small round face, blue-and-white lace maid headband, blue ribbon hair ornaments, navy-and-white maid dress, white frilled apron with the small blue whale emblem, gold decorative accents, and the distinctive small blue whale-tail feature behind her. Keep her proportions and visual identity consistent with the reference: very cute chibi proportions, oversized head, small body, short limbs, soft rounded facial features, and a gentle, slightly quiet expression. Do NOT reproduce the original three-view character sheet. Instead, create a single polished full-scene illustration. Place the character in a charming seaside café overlooking the ocean. She is standing in a natural three-quarter view, carrying a small silver serving tray with a cup of tea and a slice of cake. Her body is turned slightly toward the viewer, with one foot stepping forward, giving the pose a lively but gentle sense of motion. Behind her is a bright coastal café terrace with white wooden tables, blue fabric awnings, potted flowers, glass windows, and a sparkling blue sea in the distance. A light ocean breeze gently moves the ends of her long hair, her ribbons, and the frills of her dress. Small distant seabirds and soft white clouds add atmosphere without distracting from the character. Use soft daylight, clear blue sky, subtle warm sunlight, delicate shadows, and gentle reflected light from the sea. The lighting should make the blue hair and navy costume feel vivid while preserving soft pastel harmony. Maintain the same cute anime illustration style as the reference image: clean expressive line art, polished cel shading, soft gradients, crisp edges, carefully rendered fabric folds, lace details, hair highlights, and charming miniature character proportions. The character should clearly look like the exact same character from the reference image, not merely a similar blue-haired maid. Preserve the original hairstyle silhouette, facial design, eye color, costume motifs, accessories, whale emblem, and whale-tail feature. Create a cohesive, finished illustration rather than a model sheet or concept sheet. Use a balanced vertical composition with the character as the clear focal point and enough environmental detail to demonstrate a completely new scene. Do not add additional main characters. Do not redesign the character. Do not change her hair color, eye color, hairstyle, maid outfit identity, whale motif, or chibi proportions. Do not reproduce the front-side-back layout from the reference. Do not use a plain white background. Do not add text, labels, logos, signatures, or watermarks." -r 2096415905 -s 1024,512```
+```qwenimage-ncnn-vulkan.exe -i dafeiyu.jpg -p "Use the provided reference image as the primary character design reference. Generate a completely new illustration featuring the same blue-haired chibi girl from the reference image. Preserve her character identity and all important recognizable design features, while creating a new pose, camera angle, composition, and environment. The character must retain the same dark cobalt-blue hair, long wavy hairstyle, distinctive bangs, single curved ahoge, large blue gradient eyes, small round face, blue-and-white lace maid headband, blue ribbon hair ornaments, navy-and-white maid dress, white frilled apron with the small blue whale emblem, gold decorative accents, and the distinctive small blue whale-tail feature behind her. Keep her proportions and visual identity consistent with the reference: very cute chibi proportions, oversized head, small body, short limbs, soft rounded facial features, and a gentle, slightly quiet expression. Do NOT reproduce the original three-view character sheet. Instead, create a single polished full-scene illustration. Place the character in a charming seaside café overlooking the ocean. She is standing in a natural three-quarter view, carrying a small silver serving tray with a cup of tea and a slice of cake. Her body is turned slightly toward the viewer, with one foot stepping forward, giving the pose a lively but gentle sense of motion. Behind her is a bright coastal café terrace with white wooden tables, blue fabric awnings, potted flowers, glass windows, and a sparkling blue sea in the distance. A light ocean breeze gently moves the ends of her long hair, her ribbons, and the frills of her dress. Small distant seabirds and soft white clouds add atmosphere without distracting from the character. Use soft daylight, clear blue sky, subtle warm sunlight, delicate shadows, and gentle reflected light from the sea. The lighting should make the blue hair and navy costume feel vivid while preserving soft pastel harmony. Maintain the same cute anime illustration style as the reference image: clean expressive line art, polished cel shading, soft gradients, crisp edges, carefully rendered fabric folds, lace details, hair highlights, and charming miniature character proportions. The character should clearly look like the exact same character from the reference image, not merely a similar blue-haired maid. Preserve the original hairstyle silhouette, facial design, eye color, costume motifs, accessories, whale emblem, and whale-tail feature. Create a cohesive, finished illustration rather than a model sheet or concept sheet. Use a balanced vertical composition with the character as the clear focal point and enough environmental detail to demonstrate a completely new scene. Do not add additional main characters. Do not redesign the character. Do not change her hair color, eye color, hairstyle, maid outfit identity, whale motif, or chibi proportions. Do not reproduce the front-side-back layout from the reference. Do not use a plain white background. Do not add text, labels, logos, signatures, or watermarks." -r 2096415905 -s 1024,512```
 
 </details>
 
@@ -432,7 +435,7 @@ https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs
 <details>
 <summary>expand for full command</summary>
 
-```zimage-ncnn-vulkan.exe -i beauty.jpg -i dafeiyu.jpg -p "Use both provided reference images together. Image A is the primary scene and identity reference: a photorealistic young woman in a convenience store, originally holding a milk bottle. Image B is the character design reference: a blue-haired chibi maid character shown in front, side, and back views. Generate a single finished image that keeps the woman, convenience-store environment, and overall photographic realism of Image A, while using Image B as the design reference for a new plush toy. Transform the character from Image B into a cute high-quality plush doll. The plush toy must clearly preserve the character's identity and recognizable features: long blue hair, large blue eyes, the maid headband, blue ribbon ornaments, navy-and-white maid outfit, white apron with the whale emblem, gold decorative details, and the small whale-tail feature. Convert all of these features into a soft stuffed-plush form with realistic fabric texture, embroidered facial features, visible plush seams, soft stuffing, rounded volume, and a premium cuddly toy appearance. In the final image, completely replace the milk bottle in the woman's hands with this plush toy. She is holding the plush gently with both hands and bringing it close to her face so that her cheek is softly touching the plush's face. Change her expression to clearly happy, warm, delighted, and affectionate, as if she loves the plush. The plush should also have a cheerful, adorable, happy expression. Preserve the woman's identity, hairstyle, facial structure, natural appearance, clothing, pose context, and the realistic convenience-store setting from Image A. Keep the refrigerated shelves, indoor lighting, perspective, framing, and casual candid-photography feeling. The result should remain photorealistic for the woman and environment, while the plush should look like a believable real-world stuffed toy physically present in the scene. Keep the woman as the main subject, keep the convenience-store background from Image A, make the plush fully replace the bottle, make the plush touch the woman's cheek naturally, and faithfully preserve the character design traits from Image B. Use realistic photography, natural indoor lighting, soft fabric, embroidery, seams, stuffed volume, subtle contact shadows, believable hand-to-plush interaction, and a cute heartwarming mood. Do not generate the original bottle, do not generate a flat illustration, do not reproduce the three-view character sheet, do not redesign the character into a different costume or color scheme, and do not add extra people, extra toys, text, logos, labels, or watermarks." -r 122747264```
+```qwenimage-ncnn-vulkan.exe -i beauty.jpg -i dafeiyu.jpg -p "Use both provided reference images together. Image A is the primary scene and identity reference: a photorealistic young woman in a convenience store, originally holding a milk bottle. Image B is the character design reference: a blue-haired chibi maid character shown in front, side, and back views. Generate a single finished image that keeps the woman, convenience-store environment, and overall photographic realism of Image A, while using Image B as the design reference for a new plush toy. Transform the character from Image B into a cute high-quality plush doll. The plush toy must clearly preserve the character's identity and recognizable features: long blue hair, large blue eyes, the maid headband, blue ribbon ornaments, navy-and-white maid outfit, white apron with the whale emblem, gold decorative details, and the small whale-tail feature. Convert all of these features into a soft stuffed-plush form with realistic fabric texture, embroidered facial features, visible plush seams, soft stuffing, rounded volume, and a premium cuddly toy appearance. In the final image, completely replace the milk bottle in the woman's hands with this plush toy. She is holding the plush gently with both hands and bringing it close to her face so that her cheek is softly touching the plush's face. Change her expression to clearly happy, warm, delighted, and affectionate, as if she loves the plush. The plush should also have a cheerful, adorable, happy expression. Preserve the woman's identity, hairstyle, facial structure, natural appearance, clothing, pose context, and the realistic convenience-store setting from Image A. Keep the refrigerated shelves, indoor lighting, perspective, framing, and casual candid-photography feeling. The result should remain photorealistic for the woman and environment, while the plush should look like a believable real-world stuffed toy physically present in the scene. Keep the woman as the main subject, keep the convenience-store background from Image A, make the plush fully replace the bottle, make the plush touch the woman's cheek naturally, and faithfully preserve the character design traits from Image B. Use realistic photography, natural indoor lighting, soft fabric, embroidery, seams, stuffed volume, subtle contact shadows, believable hand-to-plush interaction, and a cute heartwarming mood. Do not generate the original bottle, do not generate a flat illustration, do not reproduce the three-view character sheet, do not redesign the character into a different costume or color scheme, and do not add extra people, extra toys, text, logos, labels, or watermarks." -r 122747264```
 
 </details>
 
@@ -445,6 +448,38 @@ https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs
 </tr>
 </table>
 
+### ControlNet
+
+<table width="100%">
+<tr>
+<td colspan="2">
+
+<details>
+<summary>expand for full command</summary>
+
+```qwenimage-ncnn-vulkan.exe -c pose.jpg -p "A half-length portrait in the warm light of a convenience store late at night. An East Asian beauty, holding milk, meets your gaze in front of the freezer." -r 1227533815```
+
+</details>
+
+</td>
+<td colspan="2">
+
+<details>
+<summary>expand for full command</summary>
+
+```qwenimage-ncnn-vulkan.exe -c canny.jpg --control-scale 0.5 -p "A modern wooden cabin beside a calm alpine lake, surrounded by pine trees and distant mountains, warm sunset light, photorealistic, cinematic, highly detailed." -r 1343675211```
+
+</details>
+
+</td>
+</tr>
+<tr>
+<td width="25%" valign="middle"><img src="images/pose.jpg"</td>
+<td width="25%" valign="middle"><img src="images/pose-out.jpg"></td>
+<td width="25%" valign="middle"><img src="images/canny.png"</td>
+<td width="25%" valign="middle"><img src="images/canny-out.jpg"></td>
+</tr>
+</table>
 
 ## Original Qwen-Image-2.1 Project
 
