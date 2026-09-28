@@ -134,10 +134,10 @@ Some Qwen Fun Acc adapters use a fixed step schedule. For example, the 4-step ad
 ControlNet generation
 
 ```shell
-qwenimage-ncnn-vulkan -c control.png --controlnet models/qwenimage21/controlnet/controlnet.ncnn.param --control-scale 1.0 -p "A red flower." -o output.png
+qwenimage-ncnn-vulkan -c control.png --control-scale 1.0 -p "A red flower." -o output.png
 ```
 
-The `-c` condition image and `--controlnet` model must be used together. ControlNet can also be combined with `-i` image editing and a LoRA. The ControlNet model uses an ncnn `.param`/`.bin` pair and can be used with Canny, depth, grayscale, HED, lineart, MLSD, pose and scribble condition images.
+When `-c` is used, ControlNet loads by default from `<model-path>/controlnet/controlnet.ncnn.param` and its matching `.bin` file; `--controlnet` can override the model path. ControlNet can also be combined with `-i` image editing and a LoRA. The model can be used with Canny, depth, grayscale, HED, lineart, MLSD, pose and scribble condition images.
 
 Multiple reference images
 
@@ -170,16 +170,16 @@ The default output is an RGBA PNG. A jpg or jpeg suffix writes RGB JPEG output, 
 ### Full Usages
 
 ```console
-Usage: qwenimage-ncnn-vulkan -p prompt -o outfile [options]...
+Usage: qwenimage-ncnn-vulkan [options]...
 
   -h                   show this help
-  -p prompt            prompt
+  -p prompt            prompt (default=A half-length portrait in the warm light of a convenience store late at night. An East Asian beauty, holding milk, meets your gaze in front of the freezer.)
   -n negative-prompt   negative prompt (optional)
   -w guidance-scale    true CFG scale (default=1.0)
   -o output-path       output image path (default=out.png)
   -i input-image       reference image for editing (repeat 1 to 10 times)
   -c control-image     ControlNet condition image (optional)
-  --controlnet path    ControlNet ncnn param file (optional)
+  --controlnet path    override default ControlNet model path (optional)
   --control-scale val  ControlNet strength (default=1.0)
   --lora path          LoRA or Qwen Fun Acc safetensors adapter (optional)
   --lora-scale value   LoRA strength (default=1.0)

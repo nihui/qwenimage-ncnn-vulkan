@@ -73,9 +73,9 @@ static bool parse_image_size(const char* text, int& width, int& height)
 
 static void print_help()
 {
-    fprintf(stdout, "Usage: qwenimage-ncnn-vulkan -p prompt -o outfile [options]...\n\n");
+    fprintf(stdout, "Usage: qwenimage-ncnn-vulkan [options]...\n\n");
     fprintf(stdout, "  -h                   show this help\n");
-    fprintf(stdout, "  -p prompt            prompt\n");
+    fprintf(stdout, "  -p prompt            prompt (default=A half-length portrait in the warm light of a convenience store late at night. An East Asian beauty, holding milk, meets your gaze in front of the freezer.)\n");
     fprintf(stdout, "  -n negative-prompt   negative prompt (optional)\n");
     fprintf(stdout, "  -w guidance-scale    true CFG scale (default=1.0)\n");
     fprintf(stdout, "  -o output-path       output image path (default=out.png)\n");
@@ -89,7 +89,7 @@ static void print_help()
     fprintf(stdout, "  --lora path          safetensors LoRA or Qwen Fun Acc adapter (optional)\n");
     fprintf(stdout, "  --lora-scale value   LoRA strength (default=1.0)\n");
     fprintf(stdout, "  -c control-image     ControlNet condition image (optional)\n");
-    fprintf(stdout, "  --controlnet path    ControlNet ncnn param file (optional)\n");
+    fprintf(stdout, "  --controlnet path    override ControlNet param path (default=<model-path>/controlnet/controlnet.ncnn.param)\n");
     fprintf(stdout, "  --control-scale val  ControlNet strength (default=1.0)\n");
 }
 
@@ -123,6 +123,7 @@ int main(int argc, char** argv)
     std::string model_dir;
     std::vector<std::string> image_paths;
     GenerateRequest request;
+    request.prompt = "A half-length portrait in the warm light of a convenience store late at night. An East Asian beauty, holding milk, meets your gaze in front of the freezer.";
     request.output = "out.png";
     RuntimeConfig config;
     const int gpu_id_auto = 233;
@@ -285,13 +286,7 @@ int main(int argc, char** argv)
     request.lora_path = lora_path;
     request.lora_scale = lora_scale;
     request.control_image_path = control_image_path;
-    request.controlnet_path = controlnet_path;
     request.control_scale = control_scale;
-    if (control_image_path.empty() != controlnet_path.empty())
-    {
-        fprintf(stderr, "-c control-image and --controlnet must be specified together\n");
-        return 2;
-    }
     if (!lora_path.empty())
     {
         TransformerLoRA adapter(lora_path, lora_scale);
@@ -327,6 +322,17 @@ int main(int argc, char** argv)
         }
         if (model_dir.empty())
             model_dir = "models/qwenimage21";
+    }
+
+    if (controlnet_path.empty() && !control_image_path.empty())
+    {
+        controlnet_path = (std::filesystem::path(model_dir) / "controlnet" / "controlnet.ncnn.param").string();
+    }
+    request.controlnet_path = controlnet_path;
+    if (control_image_path.empty() != controlnet_path.empty())
+    {
+        fprintf(stderr, "--controlnet requires a -c control-image\n");
+        return 2;
     }
 
     const bool image_edit = !image_paths.empty();
