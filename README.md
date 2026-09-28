@@ -360,9 +360,30 @@ cmake --build . -j 4
 </td>
 </tr>
 <tr>
-<td width="60%" valign="middle"><img src="images/beauty.jpg" width="50%"><img src="images/dafeiyu.jpg" width="50%"></td>
+<td width="63%" valign="middle"><img src="images/beauty.jpg" width="50%"><img src="images/dafeiyu.jpg" width="50%"></td>
 <td width="1%" align="center" valign="middle">➡️</td>
-<td width="30%" valign="middle"><img src="images/beauty-dafeiyu.jpg"></td>
+<td width="33%" valign="middle"><img src="images/beauty-dafeiyu.jpg"></td>
+</tr>
+</table>
+
+### Qwen-Image-2.1-Fun-Acc-LoRAs (4 steps)
+
+https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs
+
+<table width="100%">
+<tr>
+<td width="38%">
+
+<details>
+<summary>expand for full command</summary>
+
+```qwenimage-ncnn-vulkan.exe -p "A half-length portrait in the warm light of a convenience store late at night. An East Asian beauty, holding milk, meets your gaze in front of the freezer." -r 42 --lora Qwen-Image-2.1-Fun-Acc-4Step.safetensors -l 4```
+
+</details>
+
+![qwenimage](images/beauty-lora-4step.jpg)
+
+</td>
 </tr>
 </table>
 
