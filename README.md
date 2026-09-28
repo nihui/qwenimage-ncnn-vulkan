@@ -9,6 +9,43 @@ ncnn implementation of [Qwen-Image-2.1](https://github.com/QwenLM/Qwen-Image-2.1
 
 qwenimage-ncnn-vulkan uses [ncnn project](https://github.com/Tencent/ncnn) as the universal neural network inference framework.
 
+## Features
+
+<table>
+<tr>
+<td>
+
+- Full **BF16** model precision, no quantization
+- Works with **2GB** VRAM, no CPU offload
+- **NVIDIA / AMD / Intel / Apple Silicon**
+- Windows / Linux / macOS
+- **CPU** inference is also supported
+- **No** CUDA / PyTorch / Python dependency
+- **Portable** standalone executable
+
+</td>
+<td>
+
+- Text-to-image
+- Image **editing**
+- Up to **10** reference images
+- **Transparent** RGBA image generation
+- **Dynamic** output resolution
+- **Batch** generation
+- Qwen-Image-2.1-Fun-Acc-LoRAs (**4steps**)
+- **ControlNet**
+
+</td>
+</tr>
+</table>
+
+RX9060XT qwem-image-2.1 text-to-image 1024x1024
+|dit transformer step|(s/it) less is better|
+|:-:|:-:|
+|torch-nightly (rocm10.0.0) 20260923|6.12|
+|stable-diffusion.cpp (vulkan) 20260927|5.31|
+|qwenimage-ncnn-vulkan 20260928|4.17|
+
 ## [Download](https://github.com/nihui/qwenimage-ncnn-vulkan/releases)
 
 Download Windows/Linux/macOS Executable for Intel/AMD/NVIDIA/Apple-Silicon GPU
