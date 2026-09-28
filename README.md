@@ -324,9 +324,6 @@ cmake --build . -j 4
 <td width="1%" align="center" valign="middle">➡️</td>
 <td width="30%" valign="middle"><img src="images/dafeiyu2.jpg"></td>
 </tr>
-</table>
-
-<table width="100%">
 <tr>
 <td colspan="4">
 
