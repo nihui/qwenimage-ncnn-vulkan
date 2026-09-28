@@ -304,6 +304,51 @@ cmake --build . -j 4
 </tr>
 </table>
 
+### Qwen-Image-2.1-Fun-Acc-LoRAs (4 steps)
+
+https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs
+
+<table width="100%">
+<tr>
+<td width="33%">
+
+<details>
+<summary>expand for full command</summary>
+
+```qwenimage-ncnn-vulkan.exe -p "A half-length portrait in the warm light of a convenience store late at night. An East Asian beauty, holding milk, meets your gaze in front of the freezer." --lora Qwen-Image-2.1-Fun-Acc-4Step.safetensors -l 4 -r 42```
+
+</details>
+
+![qwenimage](images/beauty-lora-4step.jpg)
+
+</td>
+<td width="33%">
+
+<details>
+<summary>expand for full command</summary>
+
+```qwenimage-ncnn-vulkan.exe -p "A highly realistic front-facing ID-style portrait photograph of a young white European boy, centered composition, looking directly into the camera, head straight and level, both ears and all facial features naturally visible, symmetrical frontal pose, neutral calm expression with closed mouth, natural childlike facial proportions, fair skin with subtle natural variation, clear light-colored eyes, neatly combed short light-brown hair kept away from the face, no makeup, no jewelry, wearing a simple plain light-colored collared shirt with no logos or patterns. Frame the portrait from the upper chest to slightly above the head, with balanced headroom and both shoulders fully visible. Use a clean solid light-gray background with no texture, objects, shadows, gradients, or decorations. Soft even studio lighting from the front, minimal facial shadows, accurate natural skin tones, sharp focus across the entire face, realistic hair strands, high photographic detail, restrained color reproduction, professional passport-photo and school-ID-photo aesthetics, natural 85mm portrait-lens perspective, no shallow depth of field, no dramatic lighting, no beauty retouching, no skin smoothing, no exaggerated facial features. The final image should look like a genuine professionally photographed identification portrait of a European child, not a fashion portrait or artistic photograph. Avoid tilted head, side view, smiling with teeth, exaggerated expression, adult-looking facial features, facial hair, heavy styling, hats, glasses, hair covering the eyes, cropped head, asymmetrical shoulders, dramatic shadows, colorful background, environmental scenery, cinematic grading, bokeh, illustration, anime, CGI, 3D rendering, text, logos, borders, or watermarks." --lora Qwen-Image-2.1-Fun-Acc-4Step.safetensors -l 4 -r 2033503473```
+
+</details>
+
+![qwenimage](images/young.jpg)
+
+</td>
+<td width="33%">
+
+<details>
+<summary>expand for full command</summary>
+
+```qwenimage-ncnn-vulkan.exe -p "A cinematic science-fiction concept art scene depicting a vast human settlement on a distant alien planet at twilight. In the foreground, a lone explorer in a detailed pressure suit stands on a rocky ridge, seen from behind at three-quarter view, looking toward an enormous futuristic city built across a wide valley. The city combines monumental architecture, layered megastructures, elevated transit lines, glowing industrial facilities, research towers, landing platforms, and dense clusters of smaller buildings, all designed with believable engineering logic and realistic scale. A colossal orbital-elevator tower rises from the center of the city and disappears into the upper atmosphere, connected to a thin luminous tether extending toward space. Several spacecraft and cargo shuttles move through the sky at different distances, while small autonomous rovers and utility vehicles travel along illuminated roads below. The alien landscape features dark basalt cliffs, wind-carved rock formations, shallow reflective mineral lakes, sparse crystalline vegetation, and distant mountains fading into atmospheric haze. Two large moons are visible above the horizon, one partially illuminated, with a faint planetary ring crossing the sky. Use dramatic but physically plausible twilight lighting: cool blue ambient light from the sky, warm amber and white city lights, subtle volumetric haze, long soft shadows, atmospheric perspective, realistic reflections, and restrained lens effects. Emphasize a powerful sense of scale, depth, exploration, and technological civilization. The explorer should be small compared with the city and landscape, serving as a visual scale reference rather than dominating the composition. Render highly detailed hard-surface materials including brushed metal, ceramic armor, glass, composite panels, illuminated signage elements without readable text, cables, structural trusses, antennas, vents, and weathered industrial surfaces. Maintain coherent architecture and mechanical design throughout the image, with consistent perspective and believable construction. Use a wide 16:9 cinematic composition, strong foreground-middle-ground-background layering, sophisticated production-design aesthetics, realistic concept-art rendering, extremely detailed environment design, sharp focal detail with natural atmospheric falloff, and a refined blue-gray, charcoal, amber, and muted cyan color palette. The final image should look like premium science-fiction production concept art created for a major feature film or AAA game, visually spectacular but grounded in realistic materials, physics, architecture, and lighting. Avoid fantasy castles, magical effects, medieval elements, steampunk, exaggerated neon cyberpunk colors, chaotic random machinery, impossible geometry, distorted perspective, oversized characters, cartoon style, anime style, toy-like 3D rendering, excessive bloom, excessive lens flare, blurry details, readable text, logos, borders, or watermarks." --lora Qwen-Image-2.1-Fun-Acc-4Step.safetensors -l 4 -r 816285834```
+
+</details>
+
+![qwenimage](images/tech.jpg)
+
+</td>
+</tr>
+</table>
+
 ### Image editing
 
 <table width="100%">
@@ -360,27 +405,6 @@ cmake --build . -j 4
 <td width="63%" valign="middle"><img src="images/beauty.jpg" width="50%"><img src="images/dafeiyu.jpg" width="50%"></td>
 <td width="1%" align="center" valign="middle">➡️</td>
 <td width="33%" valign="middle"><img src="images/beauty-dafeiyu.jpg"></td>
-</tr>
-</table>
-
-### Qwen-Image-2.1-Fun-Acc-LoRAs (4 steps)
-
-https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs
-
-<table width="100%">
-<tr>
-<td width="38%">
-
-<details>
-<summary>expand for full command</summary>
-
-```qwenimage-ncnn-vulkan.exe -p "A half-length portrait in the warm light of a convenience store late at night. An East Asian beauty, holding milk, meets your gaze in front of the freezer." -r 42 --lora Qwen-Image-2.1-Fun-Acc-4Step.safetensors -l 4```
-
-</details>
-
-![qwenimage](images/beauty-lora-4step.jpg)
-
-</td>
 </tr>
 </table>
 
