@@ -192,7 +192,7 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     const int prefix_tokens = text_config_.dynamic_sequence ? (int)positive_ids.size() - drop_system_tokens_ : text_tokens_;
     const int negative_prefix_tokens = do_true_cfg ? (text_config_.dynamic_sequence ? (int)negative_ids.size() - drop_system_tokens_ : text_tokens_) : 0;
     uint64_t transformer_weights = 0;
-    if (!get_transformer_weight_size(paths_, transformer_weights, request.controlnet_path, request.lora_path) || !configure_auto_low_vram(config_, width, height, prefix_tokens, negative_prefix_tokens, transformer_weights, request.controlnet_path.empty()))
+    if (!get_transformer_weight_size(paths_, config_, transformer_weights, request.controlnet_path, request.lora_path) || !configure_auto_low_vram(config_, width, height, prefix_tokens, negative_prefix_tokens, transformer_weights, request.controlnet_path.empty()))
         return false;
 
     if (!models_.load_text_encoder(paths_, config_))

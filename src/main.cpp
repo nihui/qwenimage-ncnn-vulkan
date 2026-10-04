@@ -96,6 +96,7 @@ static void print_help()
     fprintf(stdout, "  -r random-seed       random seed (default=rand)\n");
     fprintf(stdout, "  -m model-path        qwen-image model path (default=models/qwenimage21)\n");
     fprintf(stdout, "  -g gpu-id            GPU device to use (-1=cpu, default=auto)\n");
+    fprintf(stdout, "  --precision mode     storage precision: auto, bf16, fp16 or fp32 (default=auto)\n");
     fprintf(stdout, "  -b batch-size        batched generation (default=1)\n");
     fprintf(stdout, "  --lora path          safetensors LoRA or Qwen Fun Acc adapter (optional)\n");
     fprintf(stdout, "  --lora-scale value   LoRA strength (default=1.0)\n");
@@ -201,6 +202,17 @@ int main(int argc, char** argv)
             if (end == value || *end != 0 || !std::isfinite(control_scale))
             {
                 fprintf(stderr, "invalid ControlNet scale: %s\n", value);
+                return 2;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--precision") == 0)
+        {
+            const char* value = get_value(i, arg);
+            if (!value) return 2;
+            if (!parse_storage_precision(value, config.storage_precision))
+            {
+                fprintf(stderr, "invalid precision: %s (auto, bf16, fp16 or fp32)\n", value);
                 return 2;
             }
             continue;
@@ -403,6 +415,7 @@ int main(int argc, char** argv)
     fprintf(stderr, "steps = %d\n", request.steps);
     fprintf(stderr, "seed = %llu\n", (unsigned long long)request.seed);
     fprintf(stderr, "gpu-id = %d\n", gpu_id);
+    fprintf(stderr, "storage-precision = %s\n", storage_precision_name(config.storage_precision));
     fprintf(stderr, "batch = %d\n", request.batch);
     fprintf(stderr, "guidance-scale = %g\n", request.guidance_scale);
     if (!lora_path.empty()) fprintf(stderr, "lora = %s (scale=%g)\n", lora_path.c_str(), lora_scale);

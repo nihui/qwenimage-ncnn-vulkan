@@ -309,7 +309,7 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
                 negative_prefix_tokens++;
     }
     uint64_t transformer_weights = 0;
-    if (!get_transformer_weight_size(paths_, transformer_weights, request.controlnet_path, request.lora_path) || !configure_auto_low_vram(config_, request.width, request.height, prefix_tokens, negative_prefix_tokens, transformer_weights, request.controlnet_path.empty()))
+    if (!get_transformer_weight_size(paths_, config_, transformer_weights, request.controlnet_path, request.lora_path) || !configure_auto_low_vram(config_, request.width, request.height, prefix_tokens, negative_prefix_tokens, transformer_weights, request.controlnet_path.empty()))
         return false;
 
     if (!models_.load_vision_encoder(paths_, config_))

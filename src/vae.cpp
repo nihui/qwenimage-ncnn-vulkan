@@ -70,10 +70,18 @@ uint64_t get_available_vae_memory(const ncnn::Net& net, const RuntimeConfig& con
     const ncnn::VulkanDevice* vkdev = net.vulkan_device();
     const uint64_t budget = get_gpu_memory_budget(config, vkdev);
     // heap budget includes this process, so subtract its estimated resident vae weights
-    // measured bf16 encoder weights use 154 mib and decoder weights use 494 mib
+    // measured bf16 encoder weights use 154 mib and decoder weights use 494 mib;
     // host weights on a shared heap still count against the same budget
-    const uint64_t weights = !net.opt.use_weights_in_host_memory || !has_separate_host_heap(vkdev) ? (encoder ? 160ull : 512ull) * 1024 * 1024 : 0;
-    return budget > weights ? budget - weights : 0;
+    uint64_t weights = !net.opt.use_weights_in_host_memory || !has_separate_host_heap(vkdev) ? (encoder ? 160ull : 512ull) * 1024 * 1024 : 0;
+    // fp32 storage holds twice the bytes of the measured bf16 weights
+    if (config.use_fp32_storage())
+        weights *= 2;
+    uint64_t available = budget > weights ? budget - weights : 0;
+    // the tiled vae cost model below assumes 16-bit activations, so plain fp32
+    // storage consumes twice the activation footprint and must budget accordingly
+    if (config.use_fp32_storage())
+        available /= 2;
+    return available;
 }
 #endif
 
