@@ -193,7 +193,18 @@ bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int p
     const uint64_t activations = std::max(prefix, target) * hidden_row * 24;
     const uint64_t mask = std::max(prefix * prefix, target * (prefix + target)) * 2 * precision_scale;
     const uint64_t decode_cache = use_prefix_cache ? (both_prefixes + branches * target) * cache_row * 3 / 2 : 0;
-    const uint64_t workspace = activations + mask + decode_cache + 384 * mib;
+    // When flash attention is unavailable (plain fp32 storage) the sdpa layer
+    // materialises the full attention score matrix plus its softmax output, each
+    // heads x target x (prefix+target); the planner used to ignore this O(N^2)
+    // block and so under-reported long fp32 runs.
+    const uint64_t attn_heads = 32;
+    const uint64_t attn_elemsize = 2 * precision_scale;
+    const uint64_t attn_score = config.use_fp32_storage()
+        ? attn_heads * target * (prefix + target) * attn_elemsize : 0;
+    const uint64_t workspace = activations + mask + attn_score + decode_cache + 384 * mib;
+    // Bound one score block to 768 MB: a smaller block re-reads the kv cache
+    // more often, a bigger one risks the allocation at large output sizes.
+    config.sdpa_score_budget_mb = 768;
     // each cfg branch retains one reusable upload allocation when spilling kv
     const uint64_t upload_cache = use_prefix_cache ? both_prefixes * cache_row : 0;
     if (transformer_weights > std::numeric_limits<uint64_t>::max() - workspace - prefix_cache - upload_cache)
@@ -202,7 +213,7 @@ bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int p
     uint64_t selected = 0;
     const bool fits = select_transformer_memory(config, budget, has_separate_host_heap(vkdev), transformer_weights, prefix_cache, upload_cache, workspace, selected);
     auto megabytes = [&](uint64_t bytes) { return (unsigned long long)(bytes / mib + (bytes % mib != 0)); };
-    fprintf(stderr, "low_vram = %d (heap=%llu MB, estimated transformer=%llu MB, prefix cache=%llu MB)\n", config.use_weights_in_host_memory ? 1 : 0, megabytes(budget), megabytes(estimate), megabytes(prefix_cache));
+    fprintf(stderr, "low_vram = %d (heap=%llu MB, estimated transformer=%llu MB, prefix cache=%llu MB, sdpa score budget=%d MB)\n", config.use_weights_in_host_memory ? 1 : 0, megabytes(budget), megabytes(estimate), megabytes(prefix_cache), config.sdpa_score_budget_mb);
     if (use_prefix_cache)
         fprintf(stderr, "transformer prefix cache = %s (estimated working memory=%llu MB)\n", config.use_kvcache_in_host_memory ? "host" : "gpu", megabytes(selected));
     else
@@ -236,6 +247,7 @@ ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage)
     option.use_packing_layout = config.use_packing_layout;
     option.use_local_pool_allocator = config.use_local_pool_allocator;
     option.use_weights_in_host_memory = stage == ModelStage::Transformer ? config.use_weights_in_host_memory : config.low_vram > 0;
+    option.sdpa_score_budget_mb = stage == ModelStage::Transformer ? config.sdpa_score_budget_mb : 0;
     option.use_mapped_model_loading = true;
     option.use_winograd_convolution = config.use_winograd_convolution;
     option.use_cooperative_matrix = true;

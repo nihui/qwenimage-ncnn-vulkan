@@ -74,6 +74,11 @@ struct RuntimeConfig
     uint64_t gpu_memory_budget = UINT64_MAX;
     bool use_weights_in_host_memory = false;
     bool use_kvcache_in_host_memory = false;
+    // budget (MB) for one plain (non-flash) sdpa attention score block.  The
+    // layer chunks the heads to stay under it, because the whole
+    // heads x dst x (src+dst) matrix cannot be allocated at large sizes.
+    // Resolved to a fixed default in configure_auto_low_vram().
+    int sdpa_score_budget_mb = 0;
     bool use_local_pool_allocator = true;
     bool use_winograd_convolution = true;
 
