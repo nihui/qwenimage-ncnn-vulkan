@@ -13,6 +13,16 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include "gpu.h"
 #include "edit_pipeline.h"
 #include "edit_input.h"
@@ -121,6 +131,13 @@ static void print_edit_timings(const EditRequest& request, const EditTimings& ti
 
 int main(int argc, char** argv)
 {
+#if defined(_WIN32)
+    // The app.manifest declares UTF-8 as the process code page, which fixes how
+    // argv (a non-ASCII prompt) is decoded, but the console still renders
+    // stdout/stderr using its own output code page, so Chinese logs showed as
+    // mojibake.  Switch the console output code page to UTF-8 as well.
+    SetConsoleOutputCP(CP_UTF8);
+#endif
     std::string model_dir;
     std::vector<std::string> image_paths;
     GenerateRequest request;

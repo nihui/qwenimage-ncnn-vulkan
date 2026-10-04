@@ -256,6 +256,17 @@ cmake ../src
 cmake --build . -j 4
 ```
 
+### Windows command-line encoding (UTF-8)
+
+On Windows the C runtime decodes `argv` using the system ANSI code page, so a
+non-ASCII prompt (for example Chinese) is mangled before it reaches the UTF-8
+tokenizer and the rendered text comes out garbled. The build embeds an
+application manifest (`src/app.manifest`) that declares
+`<activeCodePage>UTF-8</activeCodePage>`, so command-line arguments are decoded
+as UTF-8. The executable also sets the console output code page to UTF-8 at
+startup, so a Chinese prompt echoed to the console is displayed correctly
+instead of as mojibake. Requires Windows 10 version 1903 or newer.
+
 ## Sample Images
 
 ### Text to image

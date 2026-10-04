@@ -34,6 +34,26 @@ float round_to_bfloat16(float value)
     return value;
 }
 
+// sdpa binds the attention-mask buffer as a 16-bit storage buffer when bf16
+// storage is active, and VkCompute::record_clone() copies the host bytes
+// verbatim (no type cast).  The host mask therefore has to be pre-converted to
+// bf16 to match the shader.  Guarding this on use_bf16_storage alone missed the
+// bf16 *packed* fallback that ncnn selects on a device without native bf16
+// storage (net.cpp clears use_bf16_storage but keeps use_bf16_packed): on such a
+// device (e.g. Tesla V100, no VK_KHR_shader_bfloat16) the fp32 mask was uploaded
+// raw and re-read as bf16, corrupting the attention mask and garbling prompt
+// following.  The fp32 build keeps fp32 blobs, so the mask is used as-is.
+bool cast_mask_to_storage(const ncnn::Mat& src, ncnn::Mat& dst, const ncnn::Option& opt)
+{
+    if (opt.use_bf16_storage || opt.use_bf16_packed)
+    {
+        ncnn::cast_float32_to_bfloat16(src, dst, opt);
+        return !dst.empty();
+    }
+    dst = src;
+    return !dst.empty();
+}
+
 bool is_matrix(const ncnn::Mat& value, int width, int height)
 {
     return !value.empty() && value.dims == 2 && value.w == width && value.h == height && value.elempack == 1 && value.elembits() == 32 && value.refcount;
@@ -695,10 +715,8 @@ bool QwenTransformer::upload_control_static()
     cmd.record_upload(joint_cos_, joint_cos_vk_, net.opt);
     cmd.record_upload(joint_sin_, joint_sin_vk_, net.opt);
     ncnn::Mat mask_storage;
-    if (net.opt.use_bf16_storage)
-        ncnn::cast_float32_to_bfloat16(joint_mask_, mask_storage, net.opt);
-    else
-        mask_storage = joint_mask_;
+    if (!cast_mask_to_storage(joint_mask_, mask_storage, net.opt))
+        return false;
     if (control_before_vk_.empty() || joint_cos_vk_.empty() || joint_sin_vk_.empty() || mask_storage.empty())
         return false;
     cmd.record_clone(mask_storage, joint_mask_vk_, net.opt);
@@ -1112,10 +1130,8 @@ bool QwenTransformer::run_blocks_vulkan(ncnn::VkMat hidden, const std::array<ncn
         upload_cmd.record_upload(sin, sin_vk, net.opt);
         // sdpa consumes pack1 masks; avoid retaining a second packed copy
         ncnn::Mat mask_storage;
-        if (net.opt.use_bf16_storage)
-            ncnn::cast_float32_to_bfloat16(mask, mask_storage, net.opt);
-        else
-            mask_storage = mask;
+        if (!cast_mask_to_storage(mask, mask_storage, net.opt))
+            return false;
         if (mask_storage.empty())
             return false;
         upload_cmd.record_clone(mask_storage, mask_vk, net.opt);

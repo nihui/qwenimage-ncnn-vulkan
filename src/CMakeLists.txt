@@ -42,6 +42,15 @@ target_include_directories(qwenimage-ncnn-vulkan PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ncnn/src
 )
 
+# Windows: declare the active code page as UTF-8 for this process so the C runtime
+# decodes the command line (e.g. a Chinese prompt) as UTF-8 instead of the system
+# ANSI code page. The tokenizer expects UTF-8, so without this a non-ASCII prompt
+# is mangled before it ever reaches the model.
+if(MSVC)
+    target_sources(qwenimage-ncnn-vulkan PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/app.manifest)
+    set_property(TARGET qwenimage-ncnn-vulkan APPEND PROPERTY LINK_OPTIONS "/MANIFEST:EMBED")
+endif()
+
 target_link_libraries(qwenimage-ncnn-vulkan ${QWENIMAGE_LINK_LIBRARIES})
 
 include(GNUInstallDirs)
