@@ -77,9 +77,8 @@ bool resolve_storage_precision(RuntimeConfig& config, const ncnn::VulkanDevice* 
     config.use_bf16_storage = precision == StoragePrecision::Bf16;
     config.use_bf16_packed = precision == StoragePrecision::Bf16;
 
-    if (vkdev)
-        fprintf(stderr, "storage-precision = %s%s\n", storage_precision_name(precision),
-                config.storage_precision == StoragePrecision::Auto ? " (auto)" : "");
+    fprintf(stderr, "storage-precision = %s%s\n", storage_precision_name(precision),
+            config.storage_precision == StoragePrecision::Auto ? " (auto)" : "");
     return true;
 }
 #endif
@@ -100,6 +99,20 @@ bool initialize_memory_budget(RuntimeConfig& config)
         const ncnn::VulkanDevice* vkdev = ncnn::get_gpu_device(device);
         config.gpu_memory_budget = (uint64_t)vkdev->get_heap_budget() * 1024 * 1024;
         resolve_storage_precision(config, vkdev);
+    }
+    else
+    {
+        // cpu inference only has the bf16 path: ncnn's x86 backend ships no
+        // fp16 compute kernel, so an explicit fp16/fp32 request is refused
+        // instead of silently running as bf16 / falling back to a 2x footprint
+        if (config.storage_precision == StoragePrecision::Fp16 || config.storage_precision == StoragePrecision::Fp32)
+        {
+            fprintf(stderr, "--precision %s is not supported for cpu inference; falling back to bf16\n",
+                    storage_precision_name(config.storage_precision));
+            config.storage_precision = StoragePrecision::Bf16;
+        }
+        // Auto also means bf16 on a null device
+        resolve_storage_precision(config, 0);
     }
 #endif
     return true;
