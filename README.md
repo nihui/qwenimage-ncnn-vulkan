@@ -256,6 +256,31 @@ cmake ../src
 cmake --build . -j 4
 ```
 
+### Storage precision (auto / bf16 / fp16 / fp32)
+
+The storage precision of the intermediate blobs and of the resident weights is a
+**run-time** choice, so one executable supports all of them:
+
+```shell
+qwenimage-ncnn-vulkan -p "..." --precision fp16
+```
+
+| value  | storage | notes                                                             |
+|--------|---------|-------------------------------------------------------------------|
+| `auto` | -       | default: bf16 where the device has native bf16 storage, else fp16 |
+| `bf16` | 16-bit  | 8-bit exponent, so the wide activation range cannot overflow      |
+| `fp16` | 16-bit  | 10-bit mantissa; only a 5-bit exponent              |
+| `fp32` | 32-bit  | maximum fidelity; roughly doubles the resident footprint          |
+
+`auto` prefers bf16.  Devices that have fp16 but no native bf16 storage (the
+mobile GPUs and older GPUs such as the 10- and 20-series) fall back to fp16,
+and a device with neither gets plain fp32.
+
+The low-vram/VAE-tiling estimators double their byte-per-element terms for
+`fp32`, so tiling and host-memory fallback stay conservative.  The attention
+mask is uploaded in the storage type the SDPA shader actually reads, so prompt
+following stays correct on every device.
+
 ### Windows command-line encoding (UTF-8)
 
 On Windows the C runtime decodes `argv` using the system ANSI code page, so a

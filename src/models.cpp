@@ -333,19 +333,23 @@ bool validate_edit_model_paths(const ModelPaths& paths, std::string* error)
     return validate_model_paths(paths, error);
 }
 
-bool get_transformer_weight_size(const ModelPaths& paths, uint64_t& bytes, const std::string& controlnet_param, const std::string& lora_path)
+bool get_transformer_weight_size(const ModelPaths& paths, const RuntimeConfig& config, uint64_t& bytes, const std::string& controlnet_param, const std::string& lora_path)
 {
+    // the .bin files store bf16 weights (2 bytes each); an fp32 build keeps
+    // 4-byte weights resident, so scale the estimate or the low-vram spill that
+    // prevents vkAllocateMemory OOM never triggers
+    const uint64_t scale = (uint64_t)config.storage_bytes_scale();
     bytes = 0;
     for (const ModelFiles* files : {&paths.transformer_input, &paths.transformer_blocks, &paths.transformer_output})
     {
         std::error_code error;
         const uintmax_t size = std::filesystem::file_size(files->bin, error);
-        if (error || size > UINT64_MAX - bytes)
+        if (error || size > (UINT64_MAX - bytes) / scale)
         {
             fprintf(stderr, "failed to get transformer model size %s\n", files->bin.c_str());
             return false;
         }
-        bytes += size;
+        bytes += size * scale;
     }
     if (!controlnet_param.empty())
     {
@@ -360,12 +364,12 @@ bool get_transformer_weight_size(const ModelPaths& paths, uint64_t& bytes, const
         controlnet_bin.replace(controlnet_bin.size() - suffix.size(), suffix.size(), ".bin");
         std::error_code error;
         const uintmax_t size = std::filesystem::file_size(controlnet_bin, error);
-        if (error || size > UINT64_MAX - bytes)
+        if (error || size > (UINT64_MAX - bytes) / scale)
         {
             fprintf(stderr, "failed to get executable ControlNet model size %s\n", controlnet_bin.c_str());
             return false;
         }
-        bytes += size;
+        bytes += size * scale;
     }
     if (!lora_path.empty())
     {

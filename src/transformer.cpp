@@ -34,20 +34,27 @@ float round_to_bfloat16(float value)
     return value;
 }
 
-// sdpa binds the attention-mask buffer as a 16-bit storage buffer when bf16
-// storage is active, and VkCompute::record_clone() copies the host bytes
+// sdpa binds the attention-mask buffer as a 16-bit storage buffer whenever fp16
+// or bf16 storage is active, and VkCompute::record_clone() copies the host bytes
 // verbatim (no type cast).  The host mask therefore has to be pre-converted to
-// bf16 to match the shader.  Guarding this on use_bf16_storage alone missed the
-// bf16 *packed* fallback that ncnn selects on a device without native bf16
-// storage (net.cpp clears use_bf16_storage but keeps use_bf16_packed): on such a
-// device (e.g. Tesla V100, no VK_KHR_shader_bfloat16) the fp32 mask was uploaded
-// raw and re-read as bf16, corrupting the attention mask and garbling prompt
-// following.  The fp32 build keeps fp32 blobs, so the mask is used as-is.
+// the storage type the shader actually reads, whichever that is:
+//   * the bf16 *packed* fallback that ncnn selects on a device without native
+//     bf16 storage (net.cpp clears use_bf16_storage but keeps use_bf16_packed)
+//     was missed by a check on use_bf16_storage alone: on such a device (e.g.
+//     one with no VK_KHR_shader_bfloat16) the fp32 mask was uploaded raw and
+//     re-read as bf16, garbling prompt following;
+//   * an fp16 storage build has exactly the same problem with an fp32 mask.
+// Plain fp32 storage keeps fp32 blobs, so the mask is used as-is.
 bool cast_mask_to_storage(const ncnn::Mat& src, ncnn::Mat& dst, const ncnn::Option& opt)
 {
     if (opt.use_bf16_storage || opt.use_bf16_packed)
     {
         ncnn::cast_float32_to_bfloat16(src, dst, opt);
+        return !dst.empty();
+    }
+    if (opt.use_fp16_storage || opt.use_fp16_packed)
+    {
+        ncnn::cast_float32_to_float16(src, dst, opt);
         return !dst.empty();
     }
     dst = src;

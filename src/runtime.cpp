@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <climits>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 
@@ -18,6 +19,69 @@ RuntimeConfig normalize_runtime_config(RuntimeConfig config)
 {
     return config;
 }
+
+const char* storage_precision_name(StoragePrecision precision)
+{
+    switch (precision)
+    {
+    case StoragePrecision::Bf16:
+        return "bf16";
+    case StoragePrecision::Fp16:
+        return "fp16";
+    case StoragePrecision::Fp32:
+        return "fp32";
+    default:
+        return "auto";
+    }
+}
+
+bool parse_storage_precision(const char* text, StoragePrecision& precision)
+{
+    if (!text)
+        return false;
+    if (strcmp(text, "auto") == 0)
+        precision = StoragePrecision::Auto;
+    else if (strcmp(text, "bf16") == 0)
+        precision = StoragePrecision::Bf16;
+    else if (strcmp(text, "fp16") == 0)
+        precision = StoragePrecision::Fp16;
+    else if (strcmp(text, "fp32") == 0)
+        precision = StoragePrecision::Fp32;
+    else
+        return false;
+    return true;
+}
+
+#if NCNN_VULKAN
+bool resolve_storage_precision(RuntimeConfig& config, const ncnn::VulkanDevice* vkdev)
+{
+    StoragePrecision precision = config.storage_precision;
+    if (precision == StoragePrecision::Auto)
+    {
+        // bf16 first.  Devices that have fp16 but no native bf16 storage (the
+        // mobile gpus and older gpus such as the 10- and 20-series) fall back
+        // to fp16; with neither, only the plain fp32 path is left.
+        if (!vkdev)
+            precision = StoragePrecision::Bf16;
+        else if (vkdev->info.support_bf16_storage())
+            precision = StoragePrecision::Bf16;
+        else if (vkdev->info.support_fp16_storage())
+            precision = StoragePrecision::Fp16;
+        else
+            precision = StoragePrecision::Fp32;
+    }
+
+    config.use_fp16_storage = precision == StoragePrecision::Fp16;
+    config.use_fp16_packed = precision == StoragePrecision::Fp16;
+    config.use_fp16_arithmetic = precision == StoragePrecision::Fp16;
+    config.use_bf16_storage = precision == StoragePrecision::Bf16;
+    config.use_bf16_packed = precision == StoragePrecision::Bf16;
+
+    fprintf(stderr, "storage-precision = %s%s\n", storage_precision_name(precision),
+            config.storage_precision == StoragePrecision::Auto ? " (auto)" : "");
+    return true;
+}
+#endif
 
 bool initialize_memory_budget(RuntimeConfig& config)
 {
@@ -32,7 +96,23 @@ bool initialize_memory_budget(RuntimeConfig& config)
         int device = config.vulkan_device_index;
         if (device < 0 || device >= ncnn::get_gpu_count())
             device = ncnn::get_default_gpu_index();
-        config.gpu_memory_budget = (uint64_t)ncnn::get_gpu_device(device)->get_heap_budget() * 1024 * 1024;
+        const ncnn::VulkanDevice* vkdev = ncnn::get_gpu_device(device);
+        config.gpu_memory_budget = (uint64_t)vkdev->get_heap_budget() * 1024 * 1024;
+        resolve_storage_precision(config, vkdev);
+    }
+    else
+    {
+        // cpu inference only has the bf16 path: ncnn's x86 backend ships no
+        // fp16 compute kernel, so an explicit fp16/fp32 request is refused
+        // instead of silently running as bf16 / falling back to a 2x footprint
+        if (config.storage_precision == StoragePrecision::Fp16 || config.storage_precision == StoragePrecision::Fp32)
+        {
+            fprintf(stderr, "--precision %s is not supported for cpu inference; falling back to bf16\n",
+                    storage_precision_name(config.storage_precision));
+            config.storage_precision = StoragePrecision::Bf16;
+        }
+        // Auto also means bf16 on a null device
+        resolve_storage_precision(config, 0);
     }
 #endif
     return true;
@@ -114,16 +194,30 @@ bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int p
     const uint64_t budget = get_gpu_memory_budget(config, vkdev);
     const uint64_t both_prefixes = (uint64_t)prefix_tokens + negative_prefix_tokens;
     const uint64_t branches = negative_prefix_tokens > 0 ? 2 : 1;
-    const uint64_t hidden_row = 4096 * 2;
+    // the envelope below is calibrated for 16-bit (bf16/fp16) activations, so
+    // every byte-per-element term is doubled when plain fp32 storage is used
+    const uint64_t precision_scale = config.use_fp32_storage() ? 2 : 1;
+    const uint64_t hidden_row = 4096 * 2 * precision_scale;
     const uint64_t cache_row = hidden_row * 2;
     const uint64_t prefix_cache = use_prefix_cache ? both_prefixes * cache_row * 32 : 0;
 
-    // bf16 one-block workspace envelope calibrated against t2i and edit
+    // one-block workspace envelope calibrated against t2i and edit
     // include the larger prefill/decode mask and both cfg scratch cache pools
     const uint64_t activations = std::max(prefix, target) * hidden_row * 24;
-    const uint64_t mask = std::max(prefix * prefix, target * (prefix + target)) * 2;
+    const uint64_t mask = std::max(prefix * prefix, target * (prefix + target)) * 2 * precision_scale;
     const uint64_t decode_cache = use_prefix_cache ? (both_prefixes + branches * target) * cache_row * 3 / 2 : 0;
-    const uint64_t workspace = activations + mask + decode_cache + 384 * mib;
+    // When flash attention is unavailable (plain fp32 storage) the sdpa layer
+    // materialises the full attention score matrix plus its softmax output, each
+    // heads x target x (prefix+target); the planner used to ignore this O(N^2)
+    // block and so under-reported long fp32 runs.
+    const uint64_t attn_heads = 32;
+    const uint64_t attn_elemsize = 2 * precision_scale;
+    const uint64_t attn_score = config.use_fp32_storage()
+        ? attn_heads * target * (prefix + target) * attn_elemsize : 0;
+    const uint64_t workspace = activations + mask + attn_score + decode_cache + 384 * mib;
+    // Bound one score block to 768 MB: a smaller block re-reads the kv cache
+    // more often, a bigger one risks the allocation at large output sizes.
+    config.sdpa_score_budget_mb = 768;
     // each cfg branch retains one reusable upload allocation when spilling kv
     const uint64_t upload_cache = use_prefix_cache ? both_prefixes * cache_row : 0;
     if (transformer_weights > std::numeric_limits<uint64_t>::max() - workspace - prefix_cache - upload_cache)
@@ -132,7 +226,7 @@ bool configure_auto_low_vram(RuntimeConfig& config, int width, int height, int p
     uint64_t selected = 0;
     const bool fits = select_transformer_memory(config, budget, has_separate_host_heap(vkdev), transformer_weights, prefix_cache, upload_cache, workspace, selected);
     auto megabytes = [&](uint64_t bytes) { return (unsigned long long)(bytes / mib + (bytes % mib != 0)); };
-    fprintf(stderr, "low_vram = %d (heap=%llu MB, estimated transformer=%llu MB, prefix cache=%llu MB)\n", config.use_weights_in_host_memory ? 1 : 0, megabytes(budget), megabytes(estimate), megabytes(prefix_cache));
+    fprintf(stderr, "low_vram = %d (heap=%llu MB, estimated transformer=%llu MB, prefix cache=%llu MB, sdpa score budget=%d MB)\n", config.use_weights_in_host_memory ? 1 : 0, megabytes(budget), megabytes(estimate), megabytes(prefix_cache), config.sdpa_score_budget_mb);
     if (use_prefix_cache)
         fprintf(stderr, "transformer prefix cache = %s (estimated working memory=%llu MB)\n", config.use_kvcache_in_host_memory ? "host" : "gpu", megabytes(selected));
     else
@@ -155,9 +249,9 @@ ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage)
     // keeping text, transformer, and VAE graphs resident together.
     option.use_vulkan_compute = config.use_vulkan_compute;
     option.vulkan_device_index = config.vulkan_device_index;
-    option.use_fp16_storage = false;
-    option.use_fp16_packed = false;
-    option.use_fp16_arithmetic = false;
+    option.use_fp16_storage = config.use_fp16_storage;
+    option.use_fp16_packed = config.use_fp16_packed;
+    option.use_fp16_arithmetic = config.use_fp16_arithmetic;
     option.use_int8_inference = false;
     option.use_fp16_uniform = false;
     option.use_int8_uniform = false;
@@ -166,6 +260,7 @@ ncnn::Option make_ncnn_option(const RuntimeConfig& config, ModelStage stage)
     option.use_packing_layout = config.use_packing_layout;
     option.use_local_pool_allocator = config.use_local_pool_allocator;
     option.use_weights_in_host_memory = stage == ModelStage::Transformer ? config.use_weights_in_host_memory : config.low_vram > 0;
+    option.sdpa_score_budget_mb = stage == ModelStage::Transformer ? config.sdpa_score_budget_mb : 0;
     option.use_mapped_model_loading = true;
     option.use_winograd_convolution = config.use_winograd_convolution;
     option.use_cooperative_matrix = true;
@@ -196,9 +291,12 @@ bool load_net(ncnn::Net& net, const ModelFiles& files, const RuntimeConfig& conf
         if (!vkdev)
             return false;
         std::error_code error;
-        const uint64_t weights = std::filesystem::file_size(files.bin, error);
+        // the model file is bf16 (2 bytes/weight); an fp32 build keeps 4-byte
+        // weights on device, so scale the resident estimate before the spill test
+        uint64_t weights = std::filesystem::file_size(files.bin, error);
         if (error)
             return false;
+        weights *= (uint64_t)config.storage_bytes_scale();
         const uint64_t mib = 1024 * 1024;
         const uint64_t reserve = 384 * mib;
         const uint64_t budget = get_gpu_memory_budget(config, vkdev);
