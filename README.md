@@ -33,6 +33,7 @@ qwenimage-ncnn-vulkan uses [ncnn project](https://github.com/Tencent/ncnn) as th
 - **Dynamic** output resolution
 - **Batch** generation
 - Qwen-Image-2.1-Fun-Acc-LoRAs (**4steps**)
+- Qwen-Image-2.1-Turbo (**8steps**)
 - **ControlNet** (pose, canny, etc.)
 
 </td>
@@ -56,11 +57,11 @@ This package includes all the binaries required. It is portable, so no CUDA, PyT
 
 ### prepare model files
 
-Download the qwenimage21 model folder:
+Download the base [qwenimage21 model folder](https://huggingface.co/nihui-szyl/qwen-image-ncnn/tree/main/qwenimage21).
 
-https://huggingface.co/nihui-szyl/qwen-image-ncnn
+For Qwen-Image-2.1-Turbo, also download the [qwenimage21-turbo model folder](https://huggingface.co/nihui-szyl/qwen-image-ncnn/tree/main/qwenimage21-turbo). It contains the Turbo Transformer `.param` and `.bin` files and reuses the base model's other components.
 
-Put it under the `models/` directory when running from the source tree, or pass its path with `-m`.
+Place the folders side by side under `models/`, or select a model folder with `-m`. Keep the base folder named `qwenimage21` next to the Turbo folder:
 
 ```
 qwenimage-ncnn-vulkan
@@ -91,9 +92,21 @@ models/
             encoder.ncnn.bin
             decoder.ncnn.param
             decoder.ncnn.bin
+    qwenimage21-turbo/
+        transformer/
+            input.ncnn.param
+            input.ncnn.bin
+            blocks.ncnn.param
+            blocks.ncnn.bin
+            output.ncnn.param
+            output.ncnn.bin
 ```
 
-One model package supports text-to-image and image editing, dynamic output sizes and up to ten reference images.
+Both models support text-to-image and image editing, dynamic output sizes and up to ten reference images. Use `-m models/qwenimage21-turbo` to select Turbo and its automatic eight-step configuration.
+
+Files in the Turbo folder take precedence; missing files are loaded automatically from the sibling `qwenimage21` folder, including the text encoder, vision encoder, VAE, tokenizer, vision position embeddings and default ControlNet. No copying of shared components is needed.
+
+`.param` and `.bin` files are resolved separately, so the Turbo folder can also contain only its three Transformer `.bin` files when the base model's `.param` files are available.
 
 ## About Qwen-Image-2.1
 
@@ -156,6 +169,16 @@ qwenimage-ncnn-vulkan -p "A small red kite over a quiet lake." -n "blurry image,
 ```
 
 The -w value maps to Torch true_cfg_scale and defaults to 1.0. The negative prompt participates in CFG only when -w is greater than 1.
+
+Qwen-Image-2.1-Turbo generation
+
+```shell
+qwenimage-ncnn-vulkan -m models/qwenimage21-turbo -p "A small red kite over a quiet lake." -o output.png
+```
+
+Download and arrange the model folders as described in [prepare model files](#prepare-model-files).
+
+Model directory names ending in `-turbo` (case-insensitive), such as `qwenimage21-turbo`, automatically select the checkpoint's fixed eight sigma values and a terminal zero, without dynamic shifting or terminal remapping. Trailing path separators are accepted. Turbo models automatically use eight denoising steps; an explicit `-l` must be `8`. This also applies to `-i` image editing and `-b` batch generation. Keep the default CFG scale of `1.0`. PDD acceleration LoRAs have their own fixed schedule and cannot be combined with Turbo models. Other model directory names keep the base model's dynamic schedule, even with `-l 8`.
 
 Image editing
 
@@ -224,9 +247,9 @@ Usage: qwenimage-ncnn-vulkan [options]...
   --lora path          LoRA or Qwen Fun Acc safetensors adapter (optional)
   --lora-scale value   LoRA strength (default=1.0)
   -s image-size        image resolution (default=1024,1024)
-  -l steps             denoise steps (default=40)
+  -l steps             denoise steps (default=40, Turbo=8)
   -r random-seed       random seed (default=rand)
-  -m model-path        qwen-image model path (default=models/qwenimage21)
+  -m model-path        qwen-image model path (*-turbo selects Turbo; default=models/qwenimage21)
   -g gpu-id            GPU device to use (-1=cpu, default=auto)
   -b batch-size        batched generation (default=1)
 ```

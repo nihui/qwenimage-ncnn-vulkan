@@ -90,6 +90,7 @@ public:
     bool generate(const EditRequest& request, EditTimings* timings = nullptr);
 private:
     std::string model_dir_;
+    bool turbo_ = false;
     RuntimeConfig config_;
     ModelPaths paths_;
     QwenModelSet models_;

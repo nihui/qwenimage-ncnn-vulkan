@@ -3,6 +3,7 @@
 #include "models.h"
 
 #include <filesystem>
+#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -274,34 +275,51 @@ void set_stage_vkallocators(ncnn::Net& net, std::unique_ptr<ncnn::VkBlobAllocato
 }
 #endif
 }
+bool is_turbo_model_dir(const std::string& model_dir)
+{
+    std::filesystem::path path = std::filesystem::path(model_dir).lexically_normal();
+    if (path.filename().empty())
+        path = path.parent_path();
+    std::string name = path.filename().string();
+    for (char& c : name)
+        c = (char)std::tolower((unsigned char)c);
+    return name.size() >= 6 && name.compare(name.size() - 6, 6, "-turbo") == 0;
+}
+
+std::string resolve_model_file(const std::string& model_dir, const std::string& relative_path)
+{
+    std::filesystem::path root = std::filesystem::path(model_dir).lexically_normal();
+    if (root.filename().empty())
+        root = root.parent_path();
+    const std::string path = (root / relative_path).string();
+    if (!is_turbo_model_dir(model_dir) || exists(path))
+        return path;
+
+    const std::string base_path = (root.parent_path() / "qwenimage21" / relative_path).string();
+    return exists(base_path) ? base_path : path;
+}
+
 ModelPaths make_model_paths(const std::string& model_dir)
 {
+    auto files = [&](const char* component, const char* name) -> ModelFiles {
+        const std::string prefix = std::string(component) + "/" + name + ".ncnn";
+        return {resolve_model_file(model_dir, prefix + ".param"),
+                resolve_model_file(model_dir, prefix + ".bin")};
+    };
+
     ModelPaths paths;
-    const std::filesystem::path root(model_dir);
-    const auto text = root / "text_encoder";
-    const auto text_edit = root / "text_encoder_edit";
-    const auto vision = root / "vision";
-    const auto vae = root / "vae";
-    const auto transformer = root / "transformer";
-    paths.text_encoder = {(text / "text_encoder.ncnn.param").string(),
-                          (text / "text_encoder.ncnn.bin").string()};
-    paths.text_encoder_edit = {
-        (text_edit / "text_encoder.ncnn.param").string(),
-        (text_edit / "text_encoder.ncnn.bin").string()};
-    paths.vision_encoder = {
-        (vision / "vision_encoder.ncnn.param").string(),
-        (vision / "vision_encoder.ncnn.bin").string()};
-    paths.vae_encoder = {(vae / "encoder.ncnn.param").string(),
-                         (vae / "encoder.ncnn.bin").string()};
-    paths.vae_decoder = {(vae / "decoder.ncnn.param").string(),
-                         (vae / "decoder.ncnn.bin").string()};
-    paths.transformer_input = {(transformer / "input.ncnn.param").string(),
-                               (transformer / "input.ncnn.bin").string()};
-    paths.transformer_blocks = {
-        (transformer / "blocks.ncnn.param").string(),
-        (transformer / "blocks.ncnn.bin").string()};
-    paths.transformer_output = {(transformer / "output.ncnn.param").string(),
-                                (transformer / "output.ncnn.bin").string()};
+    paths.text_encoder = files("text_encoder", "text_encoder");
+    paths.text_encoder_edit = files("text_encoder_edit", "text_encoder");
+    paths.vision_encoder = files("vision", "vision_encoder");
+    paths.vae_encoder = files("vae", "encoder");
+    paths.vae_decoder = files("vae", "decoder");
+    paths.transformer_input = files("transformer", "input");
+    paths.transformer_blocks = files("transformer", "blocks");
+    paths.transformer_output = files("transformer", "output");
+    paths.controlnet = files("controlnet", "controlnet");
+    paths.processor_vocab = resolve_model_file(model_dir, "processor/vocab.txt");
+    paths.processor_merges = resolve_model_file(model_dir, "processor/merges.txt");
+    paths.vision_pos_embed = resolve_model_file(model_dir, "vision/vision_pos_embed.f32");
 
     return paths;
 }
@@ -358,6 +376,8 @@ bool get_transformer_weight_size(const ModelPaths& paths, uint64_t& bytes, const
             return false;
         }
         controlnet_bin.replace(controlnet_bin.size() - suffix.size(), suffix.size(), ".bin");
+        if (controlnet_param == paths.controlnet.param)
+            controlnet_bin = paths.controlnet.bin;
         std::error_code error;
         const uintmax_t size = std::filesystem::file_size(controlnet_bin, error);
         if (error || size > UINT64_MAX - bytes)
@@ -477,6 +497,8 @@ bool QwenModelSet::load_transformer(const ModelPaths& paths, const RuntimeConfig
             return false;
         }
         controlnet_bin.replace(controlnet_bin.size() - suffix.size(), suffix.size(), ".bin");
+        if (controlnet_path == paths.controlnet.param)
+            controlnet_bin = paths.controlnet.bin;
         if (transformer_controlnet->load_param(controlnet_path.c_str()) != 0
             || transformer_controlnet->load_model(controlnet_bin.c_str()) != 0)
         {

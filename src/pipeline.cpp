@@ -57,7 +57,7 @@ bool make_tokenizer(const std::string& root, QwenBpeTokenizer& tokenizer)
     SpecialTokensConfig spec;
     spec.eos_token = "<|im_end|>";
     spec.pad_token = "<|endoftext|>";
-    tokenizer = QwenBpeTokenizer::LoadFromFiles(root + "/processor/vocab.txt", root + "/processor/merges.txt", spec, false, false, true);
+    tokenizer = QwenBpeTokenizer::LoadFromFiles(resolve_model_file(root, "processor/vocab.txt"), resolve_model_file(root, "processor/merges.txt"), spec, false, false, true);
     if (tokenizer.vocab_size() == 0) return false;
     const char* specials[] = {
         "<|endoftext|>", "<|im_start|>", "<|im_end|>",
@@ -75,6 +75,7 @@ bool QwenImagePipeline::load(const std::string& model_dir, RuntimeConfig config,
     loaded_ = false;
     config_ = normalize_runtime_config(config);
     model_dir_ = model_dir;
+    turbo_ = is_turbo_model_dir(model_dir);
     paths_ = make_model_paths(model_dir);
     if (!validate_model_paths(paths_, error))
         return false;
@@ -107,6 +108,12 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     if (!loaded_ || request.prompt.empty() || request.steps <= 0
         || request.batch <= 0)
         return false;
+    const int steps = turbo_ ? QwenScheduler::turbo_steps : request.steps;
+    if (turbo_ && request.steps_explicit && request.steps != steps)
+    {
+        fprintf(stderr, "Turbo requires exactly %d steps\n", steps);
+        return false;
+    }
     const int width = request.width > 0 ? request.width : width_;
     const int height = request.height > 0 ? request.height : height_;
     if (width <= 0 || height <= 0 || width % 16 || height % 16)
@@ -138,7 +145,7 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
                 first.c_str(), second.c_str(), third.c_str());
     }
 
-    QwenBpeTokenizer tokenizer = QwenBpeTokenizer::LoadFromFiles(model_dir_ + "/processor/vocab.txt", model_dir_ + "/processor/merges.txt", SpecialTokensConfig(), false, false, true);
+    QwenBpeTokenizer tokenizer = QwenBpeTokenizer::LoadFromFiles(paths_.processor_vocab, paths_.processor_merges, SpecialTokensConfig(), false, false, true);
     if (tokenizer.vocab_size() == 0) return false;
     const char* specials[] = {
         "<|endoftext|>", "<|im_start|>", "<|im_end|>",
@@ -299,18 +306,20 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
     std::vector<float> sigmas;
     if (models_.transformer_lora && models_.transformer_lora->has_pdd_output())
     {
-        if (request.steps != models_.transformer_lora->required_steps())
+        if (steps != models_.transformer_lora->required_steps())
         {
             fprintf(stderr, "PDD LoRA requires exactly %d steps\n", models_.transformer_lora->required_steps());
             models_.unload_transformer();
             return false;
         }
-        sigmas.resize(request.steps + 1);
-        for (int i = 0; i <= request.steps; i++)
+        sigmas.resize(steps + 1);
+        for (int i = 0; i <= steps; i++)
             sigmas[i] = models_.transformer_lora->sigma(i);
     }
+    else if (turbo_)
+        sigmas = QwenScheduler::make_turbo_sigmas();
     else
-        sigmas = QwenScheduler::make_sigmas(request.steps, image_tokens, false);
+        sigmas = QwenScheduler::make_sigmas(steps, image_tokens, false);
     std::vector<ncnn::Mat> batch_latents(request.batch);
     const Clock::time_point transformer_begin = Clock::now();
     bool transformer_ok = true;
@@ -359,7 +368,7 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
             if (!dump_prefix.empty())
                 write_f32(dump_prefix + ".rng_initial.f32", latents);
 
-            for (int z = 0; z < request.steps; z++)
+            for (int z = 0; z < steps; z++)
             {
                 if (models_.transformer_lora)
                     models_.transformer_lora->set_step(z);
@@ -397,11 +406,11 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
                 }
                 if (request.batch > 1)
                 {
-                    fprintf(stderr, "step %d/%d of image %d/%d done\n", z + 1, request.steps, b + 1, request.batch);
+                    fprintf(stderr, "step %d/%d of image %d/%d done\n", z + 1, steps, b + 1, request.batch);
                 }
                 else
                 {
-                    fprintf(stderr, "step %d/%d done\n", z + 1, request.steps);
+                    fprintf(stderr, "step %d/%d done\n", z + 1, steps);
                 }
             }
             if (transformer_ok)

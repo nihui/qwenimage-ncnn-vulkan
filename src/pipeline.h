@@ -45,6 +45,7 @@ public:
     const RuntimeConfig& config() const { return config_; }
 private:
     std::string model_dir_;
+    bool turbo_ = false;
     RuntimeConfig config_;
     ModelPaths paths_;
     QwenModelSet models_;
