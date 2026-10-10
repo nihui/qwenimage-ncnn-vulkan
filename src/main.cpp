@@ -28,6 +28,7 @@
 #include "edit_input.h"
 #include "image_io.h"
 #include "pipeline.h"
+#include "scheduler.h"
 
 using namespace qwenimage;
 
@@ -93,6 +94,7 @@ static void print_help()
     fprintf(stdout, "  -i input-image       reference image for editing (repeat 1 to 10 times)\n");
     fprintf(stdout, "  -s image-size        image resolution (default=1024,1024)\n");
     fprintf(stdout, "  -l steps             denoise steps (default=40)\n");
+    fprintf(stdout, "  --turbo              use the fixed Qwen-Image-2.1-Turbo 8-step schedule\n");
     fprintf(stdout, "  -r random-seed       random seed (default=rand)\n");
     fprintf(stdout, "  -m model-path        qwen-image model path (default=models/qwenimage21)\n");
     fprintf(stdout, "  -g gpu-id            GPU device to use (-1=cpu, default=auto)\n");
@@ -165,6 +167,11 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; i++)
     {
         const char* arg = argv[i];
+        if (strcmp(arg, "--turbo") == 0)
+        {
+            request.turbo = true;
+            continue;
+        }
         if (strcmp(arg, "--lora") == 0)
         {
             const char* value = get_value(i, arg);
@@ -307,6 +314,15 @@ int main(int argc, char** argv)
     request.lora_scale = lora_scale;
     request.control_image_path = control_image_path;
     request.control_scale = control_scale;
+    if (request.turbo)
+    {
+        if (request.steps_explicit && request.steps != QwenScheduler::turbo_steps)
+        {
+            fprintf(stderr, "--turbo requires exactly %d steps\n", QwenScheduler::turbo_steps);
+            return 2;
+        }
+        request.steps = QwenScheduler::turbo_steps;
+    }
     if (!lora_path.empty())
     {
         TransformerLoRA adapter(lora_path, lora_scale);
@@ -317,6 +333,11 @@ int main(int argc, char** argv)
         }
         if (adapter.has_pdd_output())
         {
+            if (request.turbo)
+            {
+                fprintf(stderr, "--turbo cannot be combined with a PDD LoRA's fixed schedule\n");
+                return 2;
+            }
             if (request.steps_explicit && request.steps != adapter.required_steps())
             {
                 fprintf(stderr, "this PDD LoRA requires exactly %d steps\n", adapter.required_steps());
@@ -423,6 +444,7 @@ int main(int argc, char** argv)
         {
             edit_request.guidance_scale = request.guidance_scale;
             edit_request.steps_explicit = request.steps_explicit;
+            edit_request.turbo = request.turbo;
             edit_request.lora_path = request.lora_path;
             edit_request.lora_scale = request.lora_scale;
             edit_request.control_image_path = request.control_image_path;

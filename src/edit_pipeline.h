@@ -64,6 +64,7 @@ struct EditRequest
     int drop_system_tokens = 0;
     int steps = 40;
     bool steps_explicit = false;
+    bool turbo = false;
     std::string lora_path;
     float lora_scale = 1.f;
     std::string control_image_path;

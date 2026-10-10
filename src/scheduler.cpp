@@ -6,6 +6,12 @@
 
 namespace qwenimage {
 
+std::vector<float> QwenScheduler::make_turbo_sigmas()
+{
+    return {1.f, 0.978453f, 0.95418f, 0.926626f, 0.89508f,
+            0.845148f, 0.704534f, 0.414568f, 0.f};
+}
+
 std::vector<float> QwenScheduler::make_sigmas(int steps, int image_sequence_length, bool lightning)
 {
     double mu;

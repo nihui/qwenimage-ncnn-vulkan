@@ -33,6 +33,7 @@ qwenimage-ncnn-vulkan uses [ncnn project](https://github.com/Tencent/ncnn) as th
 - **Dynamic** output resolution
 - **Batch** generation
 - Qwen-Image-2.1-Fun-Acc-LoRAs (**4steps**)
+- Qwen-Image-2.1-Turbo (**8steps**)
 - **ControlNet** (pose, canny, etc.)
 
 </td>
@@ -157,6 +158,16 @@ qwenimage-ncnn-vulkan -p "A small red kite over a quiet lake." -n "blurry image,
 
 The -w value maps to Torch true_cfg_scale and defaults to 1.0. The negative prompt participates in CFG only when -w is greater than 1.
 
+Qwen-Image-2.1-Turbo generation
+
+```shell
+qwenimage-ncnn-vulkan --turbo -m models/qwenimage21-turbo -p "A small red kite over a quiet lake." -o output.png
+```
+
+Use a model folder with the converted [Qwen-Image-2.1-Turbo](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo) Transformer weights. The base model's Transformer `.param` files, text encoder, vision encoder and processor files can be reused. The VAE can also be reused; the official Turbo VAE differs only by BF16 rounding.
+
+`--turbo` selects the checkpoint's fixed eight sigma values and a terminal zero, without dynamic shifting or terminal remapping. It automatically sets eight denoising steps; an explicit `-l` must be `8`. The same option works with `-i` image editing and `-b` batch generation. Keep the default CFG scale of `1.0`. PDD acceleration LoRAs have their own fixed schedule and cannot be combined with `--turbo`. Passing `-l 8` without `--turbo` keeps the base model's dynamic schedule.
+
 Image editing
 
 ```shell
@@ -225,6 +236,7 @@ Usage: qwenimage-ncnn-vulkan [options]...
   --lora-scale value   LoRA strength (default=1.0)
   -s image-size        image resolution (default=1024,1024)
   -l steps             denoise steps (default=40)
+  --turbo              use the fixed Qwen-Image-2.1-Turbo 8-step schedule
   -r random-seed       random seed (default=rand)
   -m model-path        qwen-image model path (default=models/qwenimage21)
   -g gpu-id            GPU device to use (-1=cpu, default=auto)
