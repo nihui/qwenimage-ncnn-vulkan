@@ -166,6 +166,20 @@ qwenimage-ncnn-vulkan -m models/qwenimage21-turbo -p "A small red kite over a qu
 
 Use a model folder with the converted [Qwen-Image-2.1-Turbo](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo) Transformer weights. The base model's Transformer `.param` files, text encoder, vision encoder and processor files can be reused. The VAE can also be reused; the official Turbo VAE differs only by BF16 rounding.
 
+Each model or processor file is loaded from the Turbo folder when present, otherwise from the sibling `qwenimage21` folder. This applies to `.param` and `.bin` files separately, the tokenizer files, the vision position embeddings, and the default ControlNet files. The Turbo folder can therefore contain only the new Transformer binaries:
+
+```text
+models/
+    qwenimage21/             # complete base model package
+    qwenimage21-turbo/
+        transformer/
+            input.ncnn.bin
+            blocks.ncnn.bin
+            output.ncnn.bin
+```
+
+Files placed in the Turbo folder take precedence, so a Turbo VAE or copied `.param` files can also be used there.
+
 Model directory names ending in `-turbo` (case-insensitive), such as `qwenimage21-turbo`, automatically select the checkpoint's fixed eight sigma values and a terminal zero, without dynamic shifting or terminal remapping. Trailing path separators are accepted. Turbo models automatically use eight denoising steps; an explicit `-l` must be `8`. This also applies to `-i` image editing and `-b` batch generation. Keep the default CFG scale of `1.0`. PDD acceleration LoRAs have their own fixed schedule and cannot be combined with Turbo models. Other model directory names keep the base model's dynamic schedule, even with `-l 8`.
 
 Image editing

@@ -362,7 +362,7 @@ int main(int argc, char** argv)
 
     if (controlnet_path.empty() && !control_image_path.empty())
     {
-        controlnet_path = (std::filesystem::path(model_dir) / "controlnet" / "controlnet.ncnn.param").string();
+        controlnet_path = make_model_paths(model_dir).controlnet.param;
     }
     request.controlnet_path = controlnet_path;
     if (control_image_path.empty() != controlnet_path.empty())

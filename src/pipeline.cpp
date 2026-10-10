@@ -57,7 +57,7 @@ bool make_tokenizer(const std::string& root, QwenBpeTokenizer& tokenizer)
     SpecialTokensConfig spec;
     spec.eos_token = "<|im_end|>";
     spec.pad_token = "<|endoftext|>";
-    tokenizer = QwenBpeTokenizer::LoadFromFiles(root + "/processor/vocab.txt", root + "/processor/merges.txt", spec, false, false, true);
+    tokenizer = QwenBpeTokenizer::LoadFromFiles(resolve_model_file(root, "processor/vocab.txt"), resolve_model_file(root, "processor/merges.txt"), spec, false, false, true);
     if (tokenizer.vocab_size() == 0) return false;
     const char* specials[] = {
         "<|endoftext|>", "<|im_start|>", "<|im_end|>",
@@ -145,7 +145,7 @@ bool QwenImagePipeline::generate(const GenerateRequest& request, GenerateTimings
                 first.c_str(), second.c_str(), third.c_str());
     }
 
-    QwenBpeTokenizer tokenizer = QwenBpeTokenizer::LoadFromFiles(model_dir_ + "/processor/vocab.txt", model_dir_ + "/processor/merges.txt", SpecialTokensConfig(), false, false, true);
+    QwenBpeTokenizer tokenizer = QwenBpeTokenizer::LoadFromFiles(paths_.processor_vocab, paths_.processor_merges, SpecialTokensConfig(), false, false, true);
     if (tokenizer.vocab_size() == 0) return false;
     const char* specials[] = {
         "<|endoftext|>", "<|im_start|>", "<|im_end|>",

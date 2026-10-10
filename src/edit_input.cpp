@@ -4,6 +4,7 @@
 
 #include "edit_pipeline.h"
 #include "image_io.h"
+#include "models.h"
 #include "tokenizer.h"
 
 #include <algorithm>
@@ -399,8 +400,9 @@ bool prepare_native_edit_request(const std::string& model_dir, const std::vector
         return false;
     }
 
+    const ModelPaths paths = make_model_paths(model_dir);
     ncnn::Mat position_table;
-    if (!make_position_table(model_dir + "/vision/vision_pos_embed.f32", position_table))
+    if (!make_position_table(paths.vision_pos_embed, position_table))
     {
         if (error) *error = "missing vision position embedding table";
         return false;
@@ -409,7 +411,7 @@ bool prepare_native_edit_request(const std::string& model_dir, const std::vector
     SpecialTokensConfig special;
     special.eos_token = "<|im_end|>";
     special.pad_token = "<|endoftext|>";
-    QwenBpeTokenizer tokenizer = QwenBpeTokenizer::LoadFromFiles(model_dir + "/processor/vocab.txt", model_dir + "/processor/merges.txt", special, false, false, true);
+    QwenBpeTokenizer tokenizer = QwenBpeTokenizer::LoadFromFiles(paths.processor_vocab, paths.processor_merges, special, false, false, true);
     if (tokenizer.vocab_size() == 0)
     {
         if (error) *error = "failed to load processor tokenizer";
