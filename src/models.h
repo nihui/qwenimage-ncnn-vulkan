@@ -21,6 +21,7 @@ struct ModelPaths
 };
 
 ModelPaths make_model_paths(const std::string& model_dir);
+bool is_turbo_model_dir(const std::string& model_dir);
 bool get_transformer_weight_size(const ModelPaths& paths, uint64_t& bytes, const std::string& controlnet_param = std::string(), const std::string& lora_path = std::string());
 bool validate_model_paths(const ModelPaths& paths, std::string* error = nullptr);
 bool validate_edit_model_paths(const ModelPaths& paths, std::string* error = nullptr);

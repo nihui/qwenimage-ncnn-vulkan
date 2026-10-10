@@ -3,6 +3,7 @@
 #include "models.h"
 
 #include <filesystem>
+#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -274,6 +275,17 @@ void set_stage_vkallocators(ncnn::Net& net, std::unique_ptr<ncnn::VkBlobAllocato
 }
 #endif
 }
+bool is_turbo_model_dir(const std::string& model_dir)
+{
+    std::filesystem::path path = std::filesystem::path(model_dir).lexically_normal();
+    if (path.filename().empty())
+        path = path.parent_path();
+    std::string name = path.filename().string();
+    for (char& c : name)
+        c = (char)std::tolower((unsigned char)c);
+    return name.size() >= 6 && name.compare(name.size() - 6, 6, "-turbo") == 0;
+}
+
 ModelPaths make_model_paths(const std::string& model_dir)
 {
     ModelPaths paths;

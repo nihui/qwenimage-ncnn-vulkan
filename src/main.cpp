@@ -93,10 +93,9 @@ static void print_help()
     fprintf(stdout, "  -o output-path       output image path (default=out.png)\n");
     fprintf(stdout, "  -i input-image       reference image for editing (repeat 1 to 10 times)\n");
     fprintf(stdout, "  -s image-size        image resolution (default=1024,1024)\n");
-    fprintf(stdout, "  -l steps             denoise steps (default=40)\n");
-    fprintf(stdout, "  --turbo              use the fixed Qwen-Image-2.1-Turbo 8-step schedule\n");
+    fprintf(stdout, "  -l steps             denoise steps (default=40, Turbo=8)\n");
     fprintf(stdout, "  -r random-seed       random seed (default=rand)\n");
-    fprintf(stdout, "  -m model-path        qwen-image model path (default=models/qwenimage21)\n");
+    fprintf(stdout, "  -m model-path        qwen-image model path (*-turbo selects Turbo; default=models/qwenimage21)\n");
     fprintf(stdout, "  -g gpu-id            GPU device to use (-1=cpu, default=auto)\n");
     fprintf(stdout, "  -b batch-size        batched generation (default=1)\n");
     fprintf(stdout, "  --lora path          safetensors LoRA or Qwen Fun Acc adapter (optional)\n");
@@ -167,11 +166,6 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; i++)
     {
         const char* arg = argv[i];
-        if (strcmp(arg, "--turbo") == 0)
-        {
-            request.turbo = true;
-            continue;
-        }
         if (strcmp(arg, "--lora") == 0)
         {
             const char* value = get_value(i, arg);
@@ -310,43 +304,6 @@ int main(int argc, char** argv)
             return 2;
         }
     }
-    request.lora_path = lora_path;
-    request.lora_scale = lora_scale;
-    request.control_image_path = control_image_path;
-    request.control_scale = control_scale;
-    if (request.turbo)
-    {
-        if (request.steps_explicit && request.steps != QwenScheduler::turbo_steps)
-        {
-            fprintf(stderr, "--turbo requires exactly %d steps\n", QwenScheduler::turbo_steps);
-            return 2;
-        }
-        request.steps = QwenScheduler::turbo_steps;
-    }
-    if (!lora_path.empty())
-    {
-        TransformerLoRA adapter(lora_path, lora_scale);
-        if (!adapter.valid())
-        {
-            fprintf(stderr, "failed to load LoRA %s: %s\n", lora_path.c_str(), adapter.error().c_str());
-            return 2;
-        }
-        if (adapter.has_pdd_output())
-        {
-            if (request.turbo)
-            {
-                fprintf(stderr, "--turbo cannot be combined with a PDD LoRA's fixed schedule\n");
-                return 2;
-            }
-            if (request.steps_explicit && request.steps != adapter.required_steps())
-            {
-                fprintf(stderr, "this PDD LoRA requires exactly %d steps\n", adapter.required_steps());
-                return 2;
-            }
-            request.steps = adapter.required_steps();
-        }
-    }
-
     if (model_dir.empty())
     {
         const std::vector<std::string> candidates = {
@@ -363,6 +320,44 @@ int main(int argc, char** argv)
         }
         if (model_dir.empty())
             model_dir = "models/qwenimage21";
+    }
+
+    const bool turbo = is_turbo_model_dir(model_dir);
+    request.lora_path = lora_path;
+    request.lora_scale = lora_scale;
+    request.control_image_path = control_image_path;
+    request.control_scale = control_scale;
+    if (turbo)
+    {
+        if (request.steps_explicit && request.steps != QwenScheduler::turbo_steps)
+        {
+            fprintf(stderr, "Turbo models require exactly %d steps\n", QwenScheduler::turbo_steps);
+            return 2;
+        }
+        request.steps = QwenScheduler::turbo_steps;
+    }
+    if (!lora_path.empty())
+    {
+        TransformerLoRA adapter(lora_path, lora_scale);
+        if (!adapter.valid())
+        {
+            fprintf(stderr, "failed to load LoRA %s: %s\n", lora_path.c_str(), adapter.error().c_str());
+            return 2;
+        }
+        if (adapter.has_pdd_output())
+        {
+            if (turbo)
+            {
+                fprintf(stderr, "Turbo models cannot be combined with a PDD LoRA's fixed schedule\n");
+                return 2;
+            }
+            if (request.steps_explicit && request.steps != adapter.required_steps())
+            {
+                fprintf(stderr, "this PDD LoRA requires exactly %d steps\n", adapter.required_steps());
+                return 2;
+            }
+            request.steps = adapter.required_steps();
+        }
     }
 
     if (controlnet_path.empty() && !control_image_path.empty())
@@ -420,6 +415,7 @@ int main(int argc, char** argv)
     for (const std::string& image_path : image_paths)
         fprintf(stderr, "input-image = %s\n", image_path.c_str());
     fprintf(stderr, "model = %s\n", model_dir.c_str());
+    fprintf(stderr, "model-type = %s\n", turbo ? "Turbo" : "base");
     fprintf(stderr, "image-size = %d x %d\n", width, height);
     fprintf(stderr, "steps = %d\n", request.steps);
     fprintf(stderr, "seed = %llu\n", (unsigned long long)request.seed);
@@ -444,7 +440,6 @@ int main(int argc, char** argv)
         {
             edit_request.guidance_scale = request.guidance_scale;
             edit_request.steps_explicit = request.steps_explicit;
-            edit_request.turbo = request.turbo;
             edit_request.lora_path = request.lora_path;
             edit_request.lora_scale = request.lora_scale;
             edit_request.control_image_path = request.control_image_path;

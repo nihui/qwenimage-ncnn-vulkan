@@ -22,7 +22,6 @@ struct GenerateRequest
     int height = 0;
     int steps = 40;
     bool steps_explicit = false;
-    bool turbo = false;
     std::string lora_path;
     float lora_scale = 1.f;
     std::string control_image_path;
@@ -46,6 +45,7 @@ public:
     const RuntimeConfig& config() const { return config_; }
 private:
     std::string model_dir_;
+    bool turbo_ = false;
     RuntimeConfig config_;
     ModelPaths paths_;
     QwenModelSet models_;

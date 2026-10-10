@@ -139,6 +139,7 @@ bool QwenImageEditPipeline::load(const std::string& model_dir, RuntimeConfig con
     models_.unload_all();
     loaded_ = false;
     model_dir_ = model_dir;
+    turbo_ = is_turbo_model_dir(model_dir);
     config_ = normalize_runtime_config(config);
     paths_ = make_model_paths(model_dir);
     if (!validate_edit_model_paths(paths_, error))
@@ -154,8 +155,8 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         || request.width % 32 || request.height % 32
         || request.drop_system_tokens < 0)
         return false;
-    const int steps = request.turbo ? QwenScheduler::turbo_steps : request.steps;
-    if (request.turbo && request.steps_explicit && request.steps != steps)
+    const int steps = turbo_ ? QwenScheduler::turbo_steps : request.steps;
+    if (turbo_ && request.steps_explicit && request.steps != steps)
     {
         fprintf(stderr, "Turbo requires exactly %d steps\n", steps);
         return false;
@@ -471,7 +472,7 @@ bool QwenImageEditPipeline::generate(const EditRequest& request, EditTimings* ti
         for (int i = 0; i <= steps; i++)
             sigmas[i] = models_.transformer_lora->sigma(i);
     }
-    else if (request.turbo)
+    else if (turbo_)
         sigmas = QwenScheduler::make_turbo_sigmas();
     else
         sigmas = QwenScheduler::make_sigmas(steps, target_tokens, false);
